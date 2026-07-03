@@ -15,7 +15,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Coin Fairness Dashboard", page_icon="🪙", layout="wide")
 
-st.title("🪙 Coin Fairness Experiment")
+st.title("Coin Fairness Experiment")
 st.write("Submit coin flip results and view the shared experiment results. Each trial is 10 flips.")
 
 FLIPS_PER_TRIAL = 10
@@ -651,9 +651,6 @@ with results_tab:
             .agg(mean_proportion=("proportion", "mean"))
             .sort_values("mean_proportion")
         )
-
-        st.write("Mean proportion of heads by full treatment condition")
-
         fig = px.bar(
             condition_plot,
             x="mean_proportion",
@@ -692,8 +689,6 @@ with results_tab:
 
         st.divider()
 
-        st.write("Proportion heads by denomination")
-
         fig = px.box(
             plot_df,
             x="denomination",
@@ -727,8 +722,6 @@ with results_tab:
 
         st.divider()
 
-        st.write("Proportion heads by decade")
-
         fig = px.box(
             plot_df,
             x="decade",
@@ -761,9 +754,6 @@ with results_tab:
         st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
-
-        st.write("Proportion heads by posture")
-
         fig = px.box(
             plot_df,
             x="posture",
