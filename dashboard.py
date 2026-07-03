@@ -15,7 +15,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Coin Fairness Dashboard", page_icon="🪙", layout="wide")
 
-st.title("🪙 Coin Fairness Experiment")
+st.title("STAT 830 Project: Coin Fairness")
 st.write("Submit coin flip results and view the shared experiment results. Each trial is 10 flips.")
 
 FLIPS_PER_TRIAL = 10
