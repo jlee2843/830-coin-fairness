@@ -527,12 +527,10 @@ with submit_tab:
 
         with st.form("trial_form", clear_on_submit=True):
             st.markdown("### Response")
-            heads = st.number_input(
+            heads = st.selectbox(
                 "Heads out of 10",
-                min_value=0,
-                max_value=10,
-                value=5,
-                step=1
+                list(range(FLIPS_PER_TRIAL + 1)),
+                index=FLIPS_PER_TRIAL // 2
             )
 
             submitted = st.form_submit_button("Submit result")
