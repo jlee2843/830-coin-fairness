@@ -16,9 +16,30 @@ import streamlit as st
 st.set_page_config(page_title="Coin Fairness Dashboard", page_icon="🪙", layout="wide")
 
 st.title("STAT 830 Project: Coin Fairness")
-st.write("Submit coin flip results and view the shared experiment results. Each trial is 10 flips.")
+st.write("Submit coin flip results and view the shared experiment results. One run is 10 flips.")
 
 FLIPS_PER_TRIAL = 10
+
+HELD_CONSTANTS = [
+    "Sitting height / chair height",
+    "Location",
+    "Floor type: carpet",
+    "Experiment room",
+]
+
+ALLOWED_TO_VARY = [
+    "Room temperature",
+    "Room light",
+    "Number of people in the room",
+    "Noise in the room",
+    "Humidity",
+    "Mood of the flipper",
+]
+
+RESTRICTIONS = [
+    "Must flip on thumb and use the index finger as leverage.",
+    "Coin must land on the floor properly. If it does not land on the floor and lands on a body instead, re-run it.",
+]
 
 cols = [
     "trial_id", "denomination", "decade",
@@ -377,7 +398,11 @@ else:
     results_df = df
 
 
-submit_tab, results_tab = st.tabs(["Submit and edit data", "View results and analysis"])
+submit_tab, results_tab, instructions_tab = st.tabs([
+    "Submit and edit data",
+    "View results and analysis",
+    "Experiment instructions",
+])
 
 
 with submit_tab:
@@ -1121,3 +1146,25 @@ with results_tab:
             )
 
             st.plotly_chart(fig, use_container_width=True)
+
+
+with instructions_tab:
+    st.subheader("Experiment instructions")
+
+    st.markdown(f"**Vocabulary:** One run = {FLIPS_PER_TRIAL} flips.")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("### Held constant")
+        for item in HELD_CONSTANTS:
+            st.markdown(f"- {item}")
+
+    with c2:
+        st.markdown("### Allowed to vary")
+        for item in ALLOWED_TO_VARY:
+            st.markdown(f"- {item}")
+
+    st.markdown("### Restrictions")
+    for item in RESTRICTIONS:
+        st.markdown(f"- {item}")

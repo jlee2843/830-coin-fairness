@@ -1,0 +1,24 @@
+Vocabulary
+- One Run = 10 Flips
+
+Held-Constant
+- Sitting Heights (Chair Height)
+- Location
+- Floor Type (Carpet)
+- Experiment Room 
+
+Allowed to Vary
+- Room Temperature 
+- Room Light
+- Number of People in the Room
+- Noise in the Room 
+- Humidity
+- Mood of the Flipper
+
+Restrictions
+- Must flip on thumb and use the index finger as leverage
+- Coin must land on the floor properly. If it does not land on the floor and lands on a body instead, we must re-run it
+
+
+
+Make a randomized list of flipper, recorder, and picker. 
