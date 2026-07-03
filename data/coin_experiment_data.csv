@@ -1,2 +1,3 @@
-trial_id,coin_id,denomination,year,decade,posture,flipper,starting_side,heads
-1,N1,Nickel,2000,1980s,Standing,Jenny,Heads,5
+trial_id,denomination,decade,posture,flipper,starting_side,heads
+1,Nickel,1980s,Standing,Jenny,Heads,5
+2,Nickel,1980s,Standing,Jenny,Heads,5
