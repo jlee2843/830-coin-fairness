@@ -45,12 +45,12 @@ RESTRICTIONS = [
 
 cols = [
     "trial_id", "denomination", "decade",
-    "posture", "flipper", "starting_side", "heads"
+    "posture", "flipper", "picker", "recorder", "starting_side", "heads"
 ]
 
 schedule_cols = [
     "run_id", "replication", "denomination", "decade",
-    "posture", "flipper", "starting_side"
+    "posture", "flipper", "picker", "recorder", "starting_side"
 ]
 
 denominations = ["Nickel", "Dime", "Quarter"]
@@ -89,8 +89,8 @@ def load_run_schedule():
         schedule["run_id"] = schedule["run_id"].astype(int)
         schedule["replication"] = schedule["replication"].astype("Int64")
 
-    for c in ["denomination", "decade", "posture", "flipper", "starting_side"]:
-        schedule[c] = schedule[c].astype(str).str.strip()
+    for c in ["denomination", "decade", "posture", "flipper", "picker", "recorder", "starting_side"]:
+        schedule[c] = schedule[c].astype(str).str.strip().replace({"nan": ""})
 
     return schedule.sort_values("run_id").reset_index(drop=True)
 
@@ -143,8 +143,8 @@ def clean_data(df):
 
     df = df[cols]
 
-    for c in ["denomination", "decade", "posture", "flipper", "starting_side"]:
-        df[c] = df[c].astype(str).str.strip()
+    for c in ["denomination", "decade", "posture", "flipper", "picker", "recorder", "starting_side"]:
+        df[c] = df[c].astype(str).str.strip().replace({"nan": ""})
 
     df["trial_id"] = pd.to_numeric(df["trial_id"], errors="coerce")
     df["heads"] = pd.to_numeric(df["heads"], errors="coerce")
@@ -199,6 +199,8 @@ def make_dummy_data():
                         "decade": decade,
                         "posture": posture,
                         "flipper": flippers[rep % len(flippers)],
+                        "picker": flippers[(rep + 1) % len(flippers)],
+                        "recorder": flippers[(rep + 2) % len(flippers)],
                         "starting_side": starting_sides[rep % len(starting_sides)],
                         "heads": int(rng.binomial(FLIPS_PER_TRIAL, p))
                     })
@@ -519,6 +521,8 @@ with submit_tab:
             st.write(f"**Posture:** {next_run['posture']}")
         with a3:
             st.write(f"**Flipper:** {next_run['flipper']}")
+            st.write(f"**Picker:** {next_run['picker']}")
+            st.write(f"**Recorder:** {next_run['recorder']}")
             st.write(f"**Starting side:** {next_run['starting_side']}")
 
         with st.form("trial_form", clear_on_submit=True):
@@ -540,6 +544,8 @@ with submit_tab:
                 "decade": next_run["decade"],
                 "posture": next_run["posture"],
                 "flipper": next_run["flipper"],
+                "picker": next_run["picker"],
+                "recorder": next_run["recorder"],
                 "starting_side": next_run["starting_side"],
                 "heads": int(heads)
             }])
@@ -583,6 +589,8 @@ with submit_tab:
             "decade",
             "posture",
             "flipper",
+            "picker",
+            "recorder",
             "starting_side",
             "submitted_heads",
         ]

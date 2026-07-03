@@ -28,12 +28,19 @@ def build_schedule(replications, seed):
             FLIPPERS,
             STARTING_SIDES,
         ):
+            picker, recorder = rng.sample(
+                [person for person in FLIPPERS if person != flipper],
+                k=2,
+            )
+
             replication_rows.append({
                 "replication": replication,
                 "denomination": denomination,
                 "decade": decade,
                 "posture": posture,
                 "flipper": flipper,
+                "picker": picker,
+                "recorder": recorder,
                 "starting_side": starting_side,
             })
 
@@ -56,6 +63,8 @@ def write_schedule(rows, output_path):
         "decade",
         "posture",
         "flipper",
+        "picker",
+        "recorder",
         "starting_side",
     ]
 
