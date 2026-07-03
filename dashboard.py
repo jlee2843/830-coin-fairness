@@ -15,7 +15,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Coin Fairness Dashboard", page_icon="🪙", layout="wide")
 
-st.title("Coin Fairness Experiment")
+st.title("🪙 Coin Fairness Experiment")
 st.write("Submit coin flip results and view the shared experiment results. Each trial is 10 flips.")
 
 FLIPS_PER_TRIAL = 10
@@ -35,6 +35,7 @@ github_token = st.secrets.get("GITHUB_TOKEN", "")
 github_repo = st.secrets.get("GITHUB_REPO", "")
 github_path = st.secrets.get("GITHUB_PATH", "data/coin_experiment_data.csv")
 github_branch = st.secrets.get("GITHUB_BRANCH", "main")
+delete_password = st.secrets.get("DELETE_PASSWORD", "")
 
 
 def empty_data():
@@ -136,6 +137,8 @@ def missing_settings():
         missing.append("GITHUB_PATH")
     if not github_branch:
         missing.append("GITHUB_BRANCH")
+    if not delete_password:
+        missing.append("DELETE_PASSWORD")
 
     return missing
 
@@ -236,6 +239,16 @@ def delete_trial_from_github(trial_id):
     if len(new_df) == old_count:
         raise RuntimeError(f"Trial ID {trial_id} was not found.")
 
+    save_to_github(new_df, sha)
+
+    refreshed, _ = load_from_github()
+    return refreshed
+
+
+def delete_all_rows_from_github():
+    old_df, sha = load_from_github()
+
+    new_df = empty_data()
     save_to_github(new_df, sha)
 
     refreshed, _ = load_from_github()
@@ -467,6 +480,34 @@ with submit_tab:
                     st.error("Delete failed.")
                     st.write(str(e))
 
+        st.divider()
+        st.subheader("Erase all data")
+
+        st.error("Danger zone: this will erase every row in the shared GitHub CSV.")
+
+        erase_password = st.text_input(
+            "Enter admin password to erase all rows",
+            type="password"
+        )
+
+        confirm_erase_all = st.checkbox(
+            "I understand this will permanently erase all submitted rows."
+        )
+
+        if st.button("Erase all rows"):
+            if not confirm_erase_all:
+                st.error("Check the confirmation box first.")
+            elif erase_password != delete_password:
+                st.error("Incorrect password.")
+            else:
+                try:
+                    df = delete_all_rows_from_github()
+                    st.success("All rows were erased.")
+                    st.rerun()
+                except Exception as e:
+                    st.error("Erase failed.")
+                    st.write(str(e))
+
     st.divider()
     st.caption(f"Saving to: `{github_repo}/{github_path}`")
 
@@ -651,6 +692,7 @@ with results_tab:
             .agg(mean_proportion=("proportion", "mean"))
             .sort_values("mean_proportion")
         )
+
         fig = px.bar(
             condition_plot,
             x="mean_proportion",
@@ -754,6 +796,7 @@ with results_tab:
         st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
+
         fig = px.box(
             plot_df,
             x="posture",
