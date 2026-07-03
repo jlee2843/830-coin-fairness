@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime
 from io import StringIO
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,7 @@ st.title("STAT 830 Project: Coin Fairness")
 st.write("Submit coin flip results and view the shared experiment results. One run is 10 flips.")
 
 FLIPS_PER_TRIAL = 10
+RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
 
 HELD_CONSTANTS = [
     "Sitting height / chair height",
@@ -46,6 +48,11 @@ cols = [
     "posture", "flipper", "starting_side", "heads"
 ]
 
+schedule_cols = [
+    "run_id", "replication", "denomination", "decade",
+    "posture", "flipper", "starting_side"
+]
+
 denominations = ["Nickel", "Dime", "Quarter"]
 decades = ["1980s", "1990s", "2000s", "2010s", "2020s"]
 postures = ["Standing", "Sitting"]
@@ -61,6 +68,70 @@ delete_password = st.secrets.get("DELETE_PASSWORD", "")
 
 def empty_data():
     return pd.DataFrame(columns=cols)
+
+
+def load_run_schedule():
+    if not RUN_SCHEDULE_PATH.exists():
+        return pd.DataFrame(columns=schedule_cols)
+
+    schedule = pd.read_csv(RUN_SCHEDULE_PATH)
+
+    for c in schedule_cols:
+        if c not in schedule.columns:
+            schedule[c] = np.nan
+
+    schedule = schedule[schedule_cols].copy()
+    schedule["run_id"] = pd.to_numeric(schedule["run_id"], errors="coerce")
+    schedule["replication"] = pd.to_numeric(schedule["replication"], errors="coerce")
+    schedule = schedule.dropna(subset=["run_id"])
+
+    if len(schedule) > 0:
+        schedule["run_id"] = schedule["run_id"].astype(int)
+        schedule["replication"] = schedule["replication"].astype("Int64")
+
+    for c in ["denomination", "decade", "posture", "flipper", "starting_side"]:
+        schedule[c] = schedule[c].astype(str).str.strip()
+
+    return schedule.sort_values("run_id").reset_index(drop=True)
+
+
+def next_run_id_from_data(df, schedule):
+    if len(schedule) == 0:
+        return None
+
+    if len(df) == 0:
+        return int(schedule["run_id"].min())
+
+    next_run_id = int(df["trial_id"].max()) + 1
+
+    if next_run_id > int(schedule["run_id"].max()):
+        return None
+
+    return next_run_id
+
+
+def scheduled_run(schedule, run_id):
+    if run_id is None or len(schedule) == 0:
+        return None
+
+    matches = schedule[schedule["run_id"] == run_id]
+
+    if len(matches) == 0:
+        return None
+
+    return matches.iloc[0]
+
+
+def schedule_progress(schedule, df):
+    if len(schedule) == 0:
+        return schedule.copy()
+
+    completed_ids = set(df["trial_id"].astype(int)) if len(df) > 0 else set()
+    progress = schedule.copy()
+    progress["complete"] = progress["run_id"].isin(completed_ids)
+    progress["status"] = np.where(progress["complete"], "Complete", "Incomplete")
+
+    return progress
 
 
 def clean_data(df):
@@ -238,6 +309,12 @@ def save_to_github(df, sha):
 
 def add_row_to_github(new_row):
     old_df, sha = load_from_github()
+    new_trial_id = int(new_row["trial_id"].iloc[0])
+
+    if len(old_df) > 0 and new_trial_id in set(old_df["trial_id"].astype(int)):
+        raise RuntimeError(
+            f"Run ID {new_trial_id} already exists. Reload the dashboard to get the next run."
+        )
 
     new_df = pd.concat(
         [old_df[cols], new_row[cols]],
@@ -373,7 +450,7 @@ data_mode = st.sidebar.radio(
     index=0
 )
 
-st.sidebar.write(f"Each trial has **{FLIPS_PER_TRIAL} flips**.")
+st.sidebar.write(f"Each run has **{FLIPS_PER_TRIAL} flips**.")
 
 if st.sidebar.button("Reload data"):
     st.rerun()
@@ -392,6 +469,11 @@ except Exception as e:
     st.write(str(e))
     st.stop()
 
+run_schedule = load_run_schedule()
+next_run_id = next_run_id_from_data(df, run_schedule)
+next_run = scheduled_run(run_schedule, next_run_id)
+run_progress = schedule_progress(run_schedule, df)
+
 if data_mode == "Dummy data":
     results_df = make_dummy_data()
 else:
@@ -406,64 +488,117 @@ submit_tab, results_tab, instructions_tab = st.tabs([
 
 
 with submit_tab:
-    st.subheader("Submit a new 10-flip trial")
+    st.subheader("Submit the next scheduled 10-flip run")
 
-    if len(df) == 0:
-        next_trial_id = 1
+    if len(run_schedule) == 0:
+        st.error(
+            f"No randomized run schedule was found at `{RUN_SCHEDULE_PATH}`. "
+            "Run `python3 scripts/generate_run_schedule.py` first."
+        )
+    elif next_run is None:
+        st.success("All scheduled runs have been submitted.")
     else:
-        next_trial_id = int(df["trial_id"].max()) + 1
+        completed_count = int(run_progress["complete"].sum())
+        total_runs = len(run_progress)
 
-    with st.form("trial_form", clear_on_submit=True):
-        st.markdown("### Design factors")
-        c1, c2, c3 = st.columns(3)
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            st.metric("Next run ID", int(next_run["run_id"]))
+        with p2:
+            st.metric("Completed runs", f"{completed_count} / {total_runs}")
+        with p3:
+            st.metric("Remaining runs", total_runs - completed_count)
 
-        with c1:
-            denomination = st.selectbox("Denomination", denominations)
+        st.markdown("### Assigned run")
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            st.write(f"**Replication:** {int(next_run['replication'])}")
+            st.write(f"**Denomination:** {next_run['denomination']}")
+        with a2:
+            st.write(f"**Decade:** {next_run['decade']}")
+            st.write(f"**Posture:** {next_run['posture']}")
+        with a3:
+            st.write(f"**Flipper:** {next_run['flipper']}")
+            st.write(f"**Starting side:** {next_run['starting_side']}")
 
-        with c2:
-            decade = st.selectbox("Decade", decades)
+        with st.form("trial_form", clear_on_submit=True):
+            st.markdown("### Response")
+            heads = st.number_input(
+                "Heads out of 10",
+                min_value=0,
+                max_value=10,
+                value=5,
+                step=1
+            )
 
-        with c3:
-            posture = st.selectbox("Posture", postures)
+            submitted = st.form_submit_button("Submit result")
 
-        st.markdown("### Blocking / nuisance factors")
-        c4, c5 = st.columns(2)
+        if submitted:
+            new_row = pd.DataFrame([{
+                "trial_id": int(next_run["run_id"]),
+                "denomination": next_run["denomination"],
+                "decade": next_run["decade"],
+                "posture": next_run["posture"],
+                "flipper": next_run["flipper"],
+                "starting_side": next_run["starting_side"],
+                "heads": int(heads)
+            }])
 
-        with c4:
-            flipper = st.selectbox("Flipper", flippers)
+            try:
+                df = add_row_to_github(new_row)
+                st.success("Your result was saved.")
+                st.rerun()
+            except Exception as e:
+                st.error("Submission failed.")
+                st.write(str(e))
 
-        with c5:
-            starting_side = st.selectbox("Starting side", starting_sides)
+    st.divider()
 
-        st.markdown("### Response")
-        c6, c7 = st.columns(2)
+    st.subheader("Full randomized run list")
 
-        with c6:
-            trial_id = st.number_input("Trial ID", min_value=1, value=next_trial_id, step=1)
+    if len(run_schedule) == 0:
+        st.info("No randomized run list is available yet.")
+    else:
+        progress_display = run_progress.copy()
 
-        with c7:
-            heads = st.number_input("Heads out of 10", min_value=0, max_value=10, value=5, step=1)
+        if len(df) > 0:
+            submitted_heads = (
+                df[["trial_id", "heads"]]
+                .drop_duplicates(subset=["trial_id"], keep="last")
+                .rename(columns={"trial_id": "run_id", "heads": "submitted_heads"})
+            )
+            progress_display = progress_display.merge(
+                submitted_heads,
+                on="run_id",
+                how="left"
+            )
+        else:
+            progress_display["submitted_heads"] = np.nan
 
-        submitted = st.form_submit_button("Submit result")
+        display_cols = [
+            "run_id",
+            "status",
+            "replication",
+            "denomination",
+            "decade",
+            "posture",
+            "flipper",
+            "starting_side",
+            "submitted_heads",
+        ]
 
-    if submitted:
-        new_row = pd.DataFrame([{
-            "trial_id": int(trial_id),
-            "denomination": denomination,
-            "decade": decade,
-            "posture": posture,
-            "flipper": flipper,
-            "starting_side": starting_side,
-            "heads": int(heads)
-        }])
+        st.dataframe(
+            progress_display[display_cols],
+            use_container_width=True,
+            hide_index=True
+        )
 
-        try:
-            df = add_row_to_github(new_row)
-            st.success("Your result was saved.")
-            st.rerun()
-        except Exception as e:
-            st.error("Submission failed.")
-            st.write(str(e))
+        st.download_button(
+            "Download run list with status",
+            data=progress_display[display_cols].to_csv(index=False).encode("utf-8"),
+            file_name="run_schedule_with_status.csv",
+            mime="text/csv"
+        )
 
     st.divider()
 
