@@ -54,7 +54,7 @@ schedule_cols = [
 ]
 
 denominations = ["Nickel", "Dime", "Quarter"]
-decades = ["1980s", "1990s", "2000s", "2010s", "2020s"]
+decades = ["1977", "2004", "2019"]
 postures = ["Standing", "Sitting"]
 flippers = ["Jenny", "Josh", "Esther"]
 starting_sides = ["Heads", "Tails"]
@@ -176,14 +176,14 @@ def make_dummy_data():
     }
 
     for denomination in denominations:
-        for decade in ["1990s", "2000s", "2010s"]:
+        for decade in decades:
             for posture in postures:
                 for rep in range(4):
                     p = base_p[denomination]
 
-                    if decade == "1990s":
+                    if decade == "1977":
                         p -= 0.02
-                    elif decade == "2010s":
+                    elif decade == "2019":
                         p += 0.02
 
                     if posture == "Standing":
@@ -372,7 +372,7 @@ def clean_term_name(term):
 
     replacements = {
         "C(denomination)": "denomination",
-        "C(decade)": "decade",
+        "C(decade)": "year",
         "C(posture)": "posture",
         "C(flipper)": "flipper",
         "C(starting_side)": "starting side",
@@ -488,9 +488,14 @@ submit_tab, results_tab, instructions_tab = st.tabs([
     "Experiment instructions",
 ])
 
+submission_saved = st.session_state.pop("submission_saved", False)
+
 
 with submit_tab:
     st.subheader("Submit the next scheduled 10-flip run")
+
+    if submission_saved:
+        st.success("Your result was saved. The run list below has been refreshed.")
 
     if len(run_schedule) == 0:
         st.error(
@@ -517,7 +522,7 @@ with submit_tab:
             st.write(f"**Replication:** {int(next_run['replication'])}")
             st.write(f"**Denomination:** {next_run['denomination']}")
         with a2:
-            st.write(f"**Decade:** {next_run['decade']}")
+            st.write(f"**Year:** {next_run['decade']}")
             st.write(f"**Posture:** {next_run['posture']}")
         with a3:
             st.write(f"**Flipper:** {next_run['flipper']}")
@@ -550,7 +555,10 @@ with submit_tab:
 
             try:
                 df = add_row_to_github(new_row)
-                st.success("Your result was saved.")
+                run_progress = schedule_progress(run_schedule, df)
+                next_run_id = next_run_id_from_data(df, run_schedule)
+                next_run = scheduled_run(run_schedule, next_run_id)
+                st.session_state["submission_saved"] = True
                 st.rerun()
             except Exception as e:
                 st.error("Submission failed.")
@@ -579,12 +587,14 @@ with submit_tab:
         else:
             progress_display["submitted_heads"] = np.nan
 
+        progress_display = progress_display.rename(columns={"decade": "year"})
+
         display_cols = [
             "run_id",
             "status",
             "replication",
             "denomination",
-            "decade",
+            "year",
             "posture",
             "flipper",
             "picker",
@@ -613,7 +623,10 @@ with submit_tab:
     if len(df) == 0:
         st.info("No data has been submitted yet.")
     else:
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(
+            df.rename(columns={"decade": "year"}),
+            use_container_width=True
+        )
 
         st.download_button(
             "Download current CSV",
@@ -754,7 +767,7 @@ with results_tab:
 
         - $y_{ijklm}$ = proportion of heads in one 10-flip trial  
         - $\\alpha_i$ = denomination effect  
-        - $\\beta_j$ = decade effect  
+        - $\\beta_j$ = year effect  
         - $\\gamma_k$ = posture effect  
         - $\\delta_l$ = flipper/blocking effect  
         - $\\eta_m$ = starting-side effect  
@@ -936,9 +949,9 @@ with results_tab:
             y="proportion",
             color="decade",
             points="all",
-            title="Distribution of proportion heads by decade",
+            title="Distribution of proportion heads by year",
             labels={
-                "decade": "Decade",
+                "decade": "Year",
                 "proportion": "Proportion heads"
             },
             template="plotly_white"
@@ -998,9 +1011,9 @@ with results_tab:
         st.write("These plots show interactions among the design factors.")
 
         interaction_1, interaction_2, interaction_3 = st.tabs([
-            "Denomination × decade",
+            "Denomination × year",
             "Denomination × posture",
-            "Decade × posture"
+            "Year × posture"
         ])
 
         with interaction_1:
@@ -1016,11 +1029,11 @@ with results_tab:
                 y="mean_proportion",
                 color="decade",
                 markers=True,
-                title="Mean proportion of heads by denomination and decade",
+                title="Mean proportion of heads by denomination and year",
                 labels={
                     "denomination": "Denomination",
                     "mean_proportion": "Mean proportion heads",
-                    "decade": "Decade"
+                    "decade": "Year"
                 },
                 template="plotly_white"
             )
@@ -1088,9 +1101,9 @@ with results_tab:
                 y="mean_proportion",
                 color="posture",
                 markers=True,
-                title="Mean proportion of heads by decade and posture",
+                title="Mean proportion of heads by year and posture",
                 labels={
-                    "decade": "Decade",
+                    "decade": "Year",
                     "mean_proportion": "Mean proportion heads",
                     "posture": "Posture"
                 },
