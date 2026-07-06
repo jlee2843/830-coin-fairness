@@ -691,6 +691,28 @@ with submit_tab:
     st.caption(f"Saving to: `{github_repo}/{github_path}`")
 
 
+with instructions_tab:
+    st.subheader("Experiment instructions")
+
+    st.markdown(f"**Vocabulary:** One run = {FLIPS_PER_TRIAL} flips.")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("### Held constant")
+        for item in HELD_CONSTANTS:
+            st.markdown(f"- {item}")
+
+    with c2:
+        st.markdown("### Allowed to vary")
+        for item in ALLOWED_TO_VARY:
+            st.markdown(f"- {item}")
+
+    st.markdown("### Restrictions")
+    for item in RESTRICTIONS:
+        st.markdown(f"- {item}")
+
+
 with results_tab:
     if data_mode == "Dummy data":
         st.info("Showing generated dummy data. This does not change the GitHub CSV.")
@@ -1300,25 +1322,3 @@ with results_tab:
             )
 
             st.plotly_chart(fig, use_container_width=True)
-
-
-with instructions_tab:
-    st.subheader("Experiment instructions")
-
-    st.markdown(f"**Vocabulary:** One run = {FLIPS_PER_TRIAL} flips.")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.markdown("### Held constant")
-        for item in HELD_CONSTANTS:
-            st.markdown(f"- {item}")
-
-    with c2:
-        st.markdown("### Allowed to vary")
-        for item in ALLOWED_TO_VARY:
-            st.markdown(f"- {item}")
-
-    st.markdown("### Restrictions")
-    for item in RESTRICTIONS:
-        st.markdown(f"- {item}")
