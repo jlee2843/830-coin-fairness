@@ -10,3 +10,4 @@ trial_id,denomination,decade,posture,flipper,starting_side,heads
 9,Nickel,2010s,Standing,Josh,Tails,5
 10,Dime,2010s,Standing,Jenny,Tails,5
 11,Nickel,1980s,Sitting,Josh,Tails,5
+12,Nickel,2010s,Standing,Jenny,Heads,7
