@@ -3,3 +3,4 @@ trial_id,denomination,decade,posture,flipper,starting_side,heads
 2,Quarter,2010s,Standing,Josh,Heads,2
 3,Quarter,2010s,Sitting,Jenny,Tails,6
 4,Nickel,2010s,Sitting,Josh,Tails,9
+5,Nickel,1980s,Sitting,Jenny,Tails,7
