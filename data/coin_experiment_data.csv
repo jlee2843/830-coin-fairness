@@ -23,3 +23,4 @@ trial_id,denomination,decade,posture,flipper,starting_side,heads
 22,Quarter,1980s,Sitting,Esther,Tails,4
 23,Nickel,1980s,Standing,Esther,Heads,3
 24,Dime,2010s,Standing,Josh,Tails,5
+25,Quarter,2010s,Standing,Esther,Tails,3
