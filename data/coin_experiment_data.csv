@@ -47,3 +47,4 @@ trial_id,denomination,decade,posture,flipper,starting_side,heads
 46,Quarter,1980s,Standing,Josh,Heads,3
 47,Dime,2010s,Sitting,Esther,Heads,6
 48,Dime,1980s,Standing,Jenny,Tails,5
+49,Quarter,2010s,Sitting,Esther,Tails,7
