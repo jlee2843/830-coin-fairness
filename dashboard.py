@@ -1,16 +1,13 @@
 import base64
+import subprocess
+import tempfile
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import requests
-import scipy.stats as stats
-import statsmodels.formula.api as smf
-from statsmodels.stats.anova import anova_lm
 import streamlit as st
 
 
@@ -384,14 +381,318 @@ def make_dummy_data():
     return clean_data(pd.DataFrame(rows))
 
 
-def condition_label(df):
-    return (
-        df["denomination"].astype(str)
-        + " | "
-        + df["decade"].astype(str)
-        + " | "
-        + df["posture"].astype(str)
-    )
+def r_data_path():
+    return github_path if github_path else "data/coin_experiment_data.csv"
+
+
+def r_analysis_code(csv_path):
+    return f"""library(tidyverse)
+library(car)
+library(broom)
+
+coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
+  mutate(
+    trial_id = as.integer(trial_id),
+    heads = as.integer(heads),
+    total = {FLIPS_PER_TRIAL},
+    tails = total - heads,
+    proportion = heads / total,
+    denomination = factor(denomination),
+    posture = factor(posture),
+    decade = factor(decade),
+    flipper = factor(flipper),
+    starting_side = factor(starting_side),
+    treatment = interaction(denomination, posture, sep = " / ")
+  )
+
+treatment_summary <- coin |>
+  group_by(denomination, posture) |>
+  summarise(
+    runs = n(),
+    total_heads = sum(heads),
+    total_flips = sum(total),
+    mean_proportion = mean(proportion),
+    p_hat = total_heads / total_flips,
+    .groups = "drop"
+  )
+
+nuisance_summary <- coin |>
+  group_by(decade, flipper, starting_side) |>
+  summarise(
+    runs = n(),
+    total_heads = sum(heads),
+    total_flips = sum(total),
+    mean_proportion = mean(proportion),
+    p_hat = total_heads / total_flips,
+    .groups = "drop"
+  )
+
+cat("Treatment summary\\n")
+print(treatment_summary)
+cat("\\nNuisance-factor summary\\n")
+print(nuisance_summary)
+
+nuisance_fit <- try(
+  lm(
+    proportion ~ denomination * posture + decade + flipper + starting_side,
+    data = coin
+  ),
+  silent = TRUE
+)
+
+if (inherits(nuisance_fit, "try-error")) {{
+  cat("\\nModel output unavailable with the current data.\\n")
+}} else {{
+  cat("\\nType II ANOVA\\n")
+  nuisance_anova <- try(Anova(nuisance_fit, type = 2), silent = TRUE)
+
+  if (inherits(nuisance_anova, "try-error")) {{
+    cat("ANOVA unavailable with the current data.\\n")
+  }} else {{
+    print(nuisance_anova)
+  }}
+
+  cat("\\nBinomial model summary\\n")
+  binomial_fit <- try(
+    glm(
+      cbind(heads, tails) ~ denomination * posture + decade + flipper + starting_side,
+      family = binomial,
+      data = coin
+    ),
+    silent = TRUE
+  )
+
+  if (inherits(binomial_fit, "try-error")) {{
+    cat("Binomial model unavailable with the current data.\\n")
+  }} else {{
+    print(summary(binomial_fit))
+  }}
+}}
+"""
+
+
+def r_ggplot_code(csv_path):
+    return f"""library(tidyverse)
+library(broom)
+
+coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
+  mutate(
+    trial_id = as.integer(trial_id),
+    heads = as.integer(heads),
+    total = {FLIPS_PER_TRIAL},
+    tails = total - heads,
+    proportion = heads / total,
+    denomination = factor(denomination),
+    posture = factor(posture),
+    decade = factor(decade),
+    flipper = factor(flipper),
+    starting_side = factor(starting_side),
+    treatment = interaction(denomination, posture, sep = " / ")
+  )
+
+treatment_summary <- coin |>
+  group_by(denomination, posture) |>
+  summarise(
+    runs = n(),
+    mean_proportion = mean(proportion),
+    se = sd(proportion) / sqrt(runs),
+    .groups = "drop"
+  )
+
+p_treatment_mean <- ggplot(treatment_summary, aes(x = denomination, y = mean_proportion, fill = posture)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+  geom_errorbar(
+    aes(ymin = mean_proportion - se, ymax = mean_proportion + se),
+    position = position_dodge(width = 0.75),
+    width = 0.2
+  ) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Mean proportion of heads by treatment",
+    x = "Denomination",
+    y = "Mean proportion of heads",
+    fill = "Posture"
+  ) +
+  theme_minimal()
+
+p_treatment_observed <- ggplot(coin, aes(x = denomination, y = proportion, color = posture)) +
+  geom_jitter(width = 0.12, height = 0, alpha = 0.65, size = 2) +
+  geom_boxplot(aes(group = interaction(denomination, posture)), alpha = 0.25, outlier.shape = NA) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  facet_wrap(~ posture) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Observed proportions by treatment",
+    x = "Denomination",
+    y = "Proportion heads"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p_decade <- ggplot(coin, aes(x = decade, y = proportion, fill = decade)) +
+  geom_boxplot(alpha = 0.55, outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.65, size = 2) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Nuisance-factor check by decade",
+    x = "Decade",
+    y = "Proportion heads"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p_flipper <- ggplot(coin, aes(x = flipper, y = proportion, fill = flipper)) +
+  geom_boxplot(alpha = 0.55, outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.65, size = 2) +
+  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Nuisance-factor check by flipper",
+    x = "Flipper",
+    y = "Proportion heads"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+nuisance_fit <- try(
+  lm(
+    proportion ~ denomination * posture + decade + flipper + starting_side,
+    data = coin
+  ),
+  silent = TRUE
+)
+
+if (!inherits(nuisance_fit, "try-error")) {{
+  diagnostics <- augment(nuisance_fit)
+
+  p_qq <- ggplot(diagnostics, aes(sample = .std.resid)) +
+    stat_qq() +
+    stat_qq_line() +
+    labs(
+      title = "Normal Q-Q plot of model residuals",
+      x = "Theoretical quantiles",
+      y = "Standardized residuals"
+    ) +
+    theme_minimal()
+
+  p_residuals <- ggplot(diagnostics, aes(x = .fitted, y = .resid)) +
+    geom_point(alpha = 0.7) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(
+      title = "Residuals versus fitted values",
+      x = "Fitted value",
+      y = "Residual"
+    ) +
+    theme_minimal()
+}}
+
+print(p_treatment_mean)
+print(p_treatment_observed)
+print(p_decade)
+print(p_flipper)
+
+if (exists("p_qq")) print(p_qq)
+if (exists("p_residuals")) print(p_residuals)
+"""
+
+
+def full_r_script(csv_path):
+    return r_analysis_code(csv_path) + "\n\n" + r_ggplot_code(csv_path)
+
+
+def r_escape_path(path):
+    return str(path).replace("\\", "/").replace('"', '\\"')
+
+
+def r_ggplot_render_script(input_csv, output_dir):
+    plot_code = r_ggplot_code(r_escape_path(input_csv))
+
+    return plot_code + f"""
+
+dir.create("{r_escape_path(output_dir)}", showWarnings = FALSE, recursive = TRUE)
+
+ggsave(file.path("{r_escape_path(output_dir)}", "01-treatment-means.png"), p_treatment_mean, width = 8, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "02-treatment-observed.png"), p_treatment_observed, width = 8, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "03-decade-nuisance.png"), p_decade, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "04-flipper-nuisance.png"), p_flipper, width = 7, height = 5, dpi = 160)
+
+if (exists("p_qq")) {{
+  ggsave(file.path("{r_escape_path(output_dir)}", "05-qq-residuals.png"), p_qq, width = 7, height = 5, dpi = 160)
+}}
+
+if (exists("p_residuals")) {{
+  ggsave(file.path("{r_escape_path(output_dir)}", "06-residuals-fitted.png"), p_residuals, width = 7, height = 5, dpi = 160)
+}}
+"""
+
+
+@st.cache_data(show_spinner=False)
+def render_r_analysis(data_csv):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        input_csv = tmp_path / "coin_experiment_data.csv"
+        script_path = tmp_path / "run_analysis.R"
+
+        input_csv.write_text(data_csv, encoding="utf-8")
+        script_path.write_text(
+            r_analysis_code(r_escape_path(input_csv)),
+            encoding="utf-8"
+        )
+
+        try:
+            result = subprocess.run(
+                ["Rscript", str(script_path)],
+                capture_output=True,
+                text=True,
+                timeout=90
+            )
+        except FileNotFoundError:
+            return "", "", "Rscript was not found. Install R or make sure Rscript is on PATH."
+        except subprocess.TimeoutExpired:
+            return "", "", "Rscript timed out while running the R summary."
+
+        if result.returncode != 0:
+            return result.stdout, result.stderr, result.stderr or "Rscript failed."
+
+        return result.stdout, result.stderr, ""
+
+
+@st.cache_data(show_spinner=False)
+def render_r_ggplots(data_csv):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        input_csv = tmp_path / "coin_experiment_data.csv"
+        script_path = tmp_path / "render_ggplots.R"
+        output_dir = tmp_path / "plots"
+
+        input_csv.write_text(data_csv, encoding="utf-8")
+        script_path.write_text(
+            r_ggplot_render_script(input_csv, output_dir),
+            encoding="utf-8"
+        )
+
+        try:
+            result = subprocess.run(
+                ["Rscript", str(script_path)],
+                capture_output=True,
+                text=True,
+                timeout=90
+            )
+        except FileNotFoundError:
+            return [], "Rscript was not found. Install R or make sure Rscript is on PATH."
+        except subprocess.TimeoutExpired:
+            return [], "Rscript timed out while rendering the ggplot images."
+
+        if result.returncode != 0:
+            return [], result.stderr or result.stdout or "Rscript failed."
+
+        plots = []
+        for plot_path in sorted(output_dir.glob("*.png")):
+            plots.append((plot_path.stem, plot_path.read_bytes()))
+
+        return plots, ""
 
 
 def missing_settings():
@@ -600,96 +901,7 @@ def delete_all_rows_from_github():
     return refreshed
 
 
-def run_anova(df):
-    formula = (
-        "proportion ~ C(denomination) * C(decade) * C(posture) "
-        "+ C(flipper) + C(starting_side)"
-    )
-
-    model = smf.ols(formula, data=df).fit()
-    table = anova_lm(model, typ=2)
-
-    return model, table
-
-
-def clean_term_name(term):
-    term = str(term)
-
-    replacements = {
-        "C(denomination)": "denomination",
-        "C(decade)": "decade",
-        "C(posture)": "posture",
-        "C(flipper)": "flipper",
-        "C(starting_side)": "starting side",
-        ":": " × "
-    }
-
-    for old, new in replacements.items():
-        term = term.replace(old, new)
-
-    return term
-
-
-def make_qq_plot(model):
-    residuals = pd.Series(model.resid).dropna()
-
-    theoretical, ordered = stats.probplot(residuals, dist="norm", fit=False)
-
-    qq_df = pd.DataFrame({
-        "Theoretical quantiles": theoretical,
-        "Ordered residuals": ordered
-    })
-
-    slope, intercept, r = stats.probplot(residuals, dist="norm", fit=True)[1]
-
-    x_min = qq_df["Theoretical quantiles"].min()
-    x_max = qq_df["Theoretical quantiles"].max()
-
-    line_x = np.array([x_min, x_max])
-    line_y = intercept + slope * line_x
-
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Scatter(
-            x=qq_df["Theoretical quantiles"],
-            y=qq_df["Ordered residuals"],
-            mode="markers",
-            name="Residuals"
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=line_x,
-            y=line_y,
-            mode="lines",
-            name="Normal reference line"
-        )
-    )
-
-    fig.update_layout(
-        title="Normal Q-Q plot of residuals",
-        xaxis_title="Theoretical normal quantiles",
-        yaxis_title="Ordered residuals",
-        template="plotly_white",
-        height=550,
-        margin=dict(l=20, r=20, t=70, b=40)
-    )
-
-    return fig
-
-
 st.sidebar.header("Settings")
-
-alpha = st.sidebar.number_input(
-    "Significance level",
-    min_value=0.001,
-    max_value=0.20,
-    value=0.05,
-    step=0.01,
-    format="%.3f"
-)
 
 data_mode = st.sidebar.radio(
     "Data shown in results tab",
@@ -1099,6 +1311,9 @@ with instructions_tab:
 
     st.markdown(f"**Vocabulary:** One run = {FLIPS_PER_TRIAL} flips.")
 
+    st.markdown("**Treatment factors:** denomination and posture.")
+    st.markdown("**Nuisance factors:** decade, flipper, and starting side.")
+
     c1, c2 = st.columns(2)
 
     with c1:
@@ -1126,47 +1341,19 @@ with results_tab:
         st.info("No data has been submitted yet.")
         st.stop()
 
-    st.subheader("Summary")
+    st.subheader("Analysis plan")
 
-    m1, m2, m3, m4 = st.columns(4)
+    st.markdown(
+        """
+        The treatment structure is denomination by posture. Decade, flipper,
+        and starting side are included as nuisance factors.
 
-    with m1:
-        st.metric("Trials", len(results_df))
+        The R model below uses:
 
-    with m2:
-        st.metric("Total flips", int(results_df["total"].sum()))
-
-    with m3:
-        st.metric("Total heads", int(results_df["heads"].sum()))
-
-    with m4:
-        st.metric("Overall p̂", f"{results_df['heads'].sum() / results_df['total'].sum():.3f}")
-
-    summary_df = results_df.copy()
-    summary_df["condition"] = condition_label(summary_df)
-
-    summary = (
-        summary_df
-        .groupby("condition")
-        .agg(
-            trials=("trial_id", "count"),
-            total_heads=("heads", "sum"),
-            total_flips=("total", "sum"),
-            mean_proportion=("proportion", "mean")
-        )
-        .reset_index()
+        - Treatment factors: `denomination`, `posture`
+        - Nuisance factors: `decade`, `flipper`, `starting_side`
+        """
     )
-
-    summary["p_hat"] = summary["total_heads"] / summary["total_flips"]
-
-    st.subheader("Summary by treatment condition")
-    st.dataframe(summary.sort_values("condition"), use_container_width=True)
-
-    st.divider()
-
-    st.subheader("Test equality of mean proportions")
-
-    st.write("Model used:")
 
     st.latex(
         r"""
@@ -1174,554 +1361,112 @@ with results_tab:
         =
         \mu
         + \alpha_i
-        + \beta_j
-        + \gamma_k
-        + (\alpha\beta)_{ij}
-        + (\alpha\gamma)_{ik}
-        + (\beta\gamma)_{jk}
-        + (\alpha\beta\gamma)_{ijk}
-        + \delta_l
-        + \eta_m
+        + \gamma_j
+        + (\alpha\gamma)_{ij}
+        + d_k
+        + f_l
+        + s_m
         + \varepsilon_{ijklm}
         """
     )
 
     st.markdown(
         """
-        where:
-
-        - $y_{ijklm}$ = proportion of heads in one 10-flip trial  
-        - $\\alpha_i$ = denomination effect  
-        - $\\beta_j$ = decade effect  
-        - $\\gamma_k$ = posture effect  
-        - $\\delta_l$ = flipper/blocking effect  
-        - $\\eta_m$ = starting-side effect  
-        - $\\varepsilon_{ijklm}$ = random error
+        where $d_k$, $f_l$, and $s_m$ are nuisance-factor effects. There are no
+        nuisance-by-treatment interactions in this model.
         """
     )
 
-    model = None
-    anova_table = None
+    st.divider()
 
-    if len(results_df) < 10:
-        st.warning("More data is needed before the ANOVA is meaningful.")
-    else:
-        try:
-            model, anova_table = run_anova(results_df)
+    st.subheader("Data preview for R")
+    st.dataframe(results_df[cols], use_container_width=True)
 
-            clean_anova = anova_table.copy()
-            clean_anova = clean_anova.reset_index().rename(columns={"index": "Term"})
-            clean_anova["Term"] = clean_anova["Term"].apply(clean_term_name)
+    csv_path = r_data_path()
+    analysis_code = r_analysis_code(csv_path)
+    plot_code = r_ggplot_code(csv_path)
+    script_code = full_r_script(csv_path)
 
-            clean_anova = clean_anova.rename(columns={
-                "sum_sq": "Sum of squares",
-                "df": "df",
-                "F": "F statistic",
-                "PR(>F)": "p-value"
-            })
+    download_script_col, download_data_col = st.columns(2)
 
-            for c in ["Sum of squares", "F statistic", "p-value"]:
-                if c in clean_anova.columns:
-                    clean_anova[c] = clean_anova[c].round(4)
+    with download_script_col:
+        st.download_button(
+            "Download R analysis script",
+            data=script_code.encode("utf-8"),
+            file_name="coin_nuisance_factor_analysis.R",
+            mime="text/plain",
+            use_container_width=True
+        )
 
-            st.write("ANOVA table")
-            st.dataframe(clean_anova, use_container_width=True, hide_index=True)
-
-            sig = [
-                clean_term_name(x)
-                for x in anova_table[anova_table["PR(>F)"] < alpha].index.tolist()
-            ]
-
-            if sig:
-                st.warning(
-                    f"At alpha = {alpha}, at least one factor or interaction is significant. "
-                    "This suggests that the condition means are not all equal."
-                )
-                st.write("Significant terms:")
-                for x in sig:
-                    st.write(f"- {x}")
-            else:
-                st.success(
-                    f"At alpha = {alpha}, no factor or interaction is significant. "
-                    "There is no evidence that the condition means differ."
-                )
-
-            with st.expander("Model details"):
-                model_stats = pd.DataFrame({
-                    "Metric": [
-                        "Number of observations",
-                        "Residual df",
-                        "Model df",
-                        "R-squared",
-                        "Adjusted R-squared",
-                        "F-statistic",
-                        "Overall model p-value"
-                    ],
-                    "Value": [
-                        int(model.nobs),
-                        int(model.df_resid),
-                        int(model.df_model),
-                        round(model.rsquared, 4),
-                        round(model.rsquared_adj, 4),
-                        round(model.fvalue, 4) if model.fvalue is not None else np.nan,
-                        round(model.f_pvalue, 4) if model.f_pvalue is not None else np.nan
-                    ]
-                })
-
-                st.dataframe(model_stats, use_container_width=True, hide_index=True)
-
-        except Exception as e:
-            st.error("ANOVA failed.")
-            st.write(str(e))
+    with download_data_col:
+        st.download_button(
+            "Download data for R",
+            data=results_df[cols].to_csv(index=False).encode("utf-8"),
+            file_name="coin_experiment_data.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
     st.divider()
 
-    st.subheader("Visualizations")
-
-    plot_df = results_df.copy()
-    plot_df["condition"] = condition_label(plot_df)
-
-    main_plot_tab, interaction_plot_tab, block_plot_tab, distribution_plot_tab, diagnostics_tab = st.tabs([
-        "Main plots",
-        "Interaction plots",
-        "Blocking checks",
-        "Distribution",
-        "Residual checks"
+    code_tab, plot_tab = st.tabs([
+        "R summaries and model",
+        "R ggplot visualizations",
     ])
 
-    with main_plot_tab:
-        condition_plot = (
-            plot_df
-            .groupby("condition", as_index=False)
-            .agg(mean_proportion=("proportion", "mean"))
-            .sort_values("mean_proportion")
-        )
+    with code_tab:
+        analysis_data_csv = results_df[cols].to_csv(index=False)
 
-        fig = px.bar(
-            condition_plot,
-            x="mean_proportion",
-            y="condition",
-            orientation="h",
-            text="mean_proportion",
-            title="Mean proportion of heads by treatment condition",
-            labels={
-                "mean_proportion": "Mean proportion heads",
-                "condition": "Condition"
-            },
-            template="plotly_white"
-        )
-
-        fig.update_traces(
-            texttemplate="%{text:.2f}",
-            textposition="outside",
-            marker_line_width=0.5
-        )
-
-        fig.add_vline(
-            x=0.5,
-            line_dash="dash",
-            line_width=2,
-            annotation_text="Fair coin p = 0.5",
-            annotation_position="top"
-        )
-
-        fig.update_xaxes(range=[0, 1])
-        fig.update_layout(
-            height=max(500, 30 * len(condition_plot)),
-            margin=dict(l=20, r=40, t=70, b=40)
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        fig = px.box(
-            plot_df,
-            x="denomination",
-            y="proportion",
-            color="denomination",
-            points="all",
-            title="Distribution of proportion heads by denomination",
-            labels={
-                "denomination": "Denomination",
-                "proportion": "Proportion heads"
-            },
-            template="plotly_white"
-        )
-
-        fig.add_hline(
-            y=0.5,
-            line_dash="dash",
-            line_width=2,
-            annotation_text="Fair coin p = 0.5",
-            annotation_position="top left"
-        )
-
-        fig.update_yaxes(range=[0, 1])
-        fig.update_layout(
-            height=500,
-            showlegend=False,
-            margin=dict(l=20, r=20, t=70, b=40)
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        fig = px.box(
-            plot_df,
-            x="decade",
-            y="proportion",
-            color="decade",
-            points="all",
-            title="Distribution of proportion heads by decade",
-            labels={
-                "decade": "Decade",
-                "proportion": "Proportion heads"
-            },
-            template="plotly_white"
-        )
-
-        fig.add_hline(
-            y=0.5,
-            line_dash="dash",
-            line_width=2,
-            annotation_text="Fair coin p = 0.5",
-            annotation_position="top left"
-        )
-
-        fig.update_yaxes(range=[0, 1])
-        fig.update_layout(
-            height=500,
-            showlegend=False,
-            margin=dict(l=20, r=20, t=70, b=40)
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
-        fig = px.box(
-            plot_df,
-            x="posture",
-            y="proportion",
-            color="posture",
-            points="all",
-            title="Distribution of proportion heads by posture",
-            labels={
-                "posture": "Posture",
-                "proportion": "Proportion heads"
-            },
-            template="plotly_white"
-        )
-
-        fig.add_hline(
-            y=0.5,
-            line_dash="dash",
-            line_width=2,
-            annotation_text="Fair coin p = 0.5",
-            annotation_position="top left"
-        )
-
-        fig.update_yaxes(range=[0, 1])
-        fig.update_layout(
-            height=500,
-            showlegend=False,
-            margin=dict(l=20, r=20, t=70, b=40)
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    with interaction_plot_tab:
-        st.write("These plots show interactions among the design factors.")
-
-        interaction_1, interaction_2, interaction_3 = st.tabs([
-            "Denomination × decade",
-            "Denomination × posture",
-            "Decade × posture"
-        ])
-
-        with interaction_1:
-            tmp = (
-                plot_df
-                .groupby(["denomination", "decade"], as_index=False)
-                .agg(mean_proportion=("proportion", "mean"))
+        with st.spinner("Running R summaries and model..."):
+            analysis_output, analysis_messages, analysis_error = render_r_analysis(
+                analysis_data_csv
             )
 
-            fig = px.line(
-                tmp,
-                x="denomination",
-                y="mean_proportion",
-                color="decade",
-                markers=True,
-                title="Mean proportion of heads by denomination and decade",
-                labels={
-                    "denomination": "Denomination",
-                    "mean_proportion": "Mean proportion heads",
-                    "decade": "Decade"
-                },
-                template="plotly_white"
-            )
-
-            fig.add_hline(
-                y=0.5,
-                line_dash="dash",
-                line_width=2,
-                annotation_text="Fair coin p = 0.5",
-                annotation_position="top left"
-            )
-
-            fig.update_yaxes(range=[0, 1])
-            fig.update_traces(line=dict(width=3), marker=dict(size=9))
-            fig.update_layout(height=500, margin=dict(l=20, r=20, t=70, b=40))
-
-            st.plotly_chart(fig, use_container_width=True)
-
-        with interaction_2:
-            tmp = (
-                plot_df
-                .groupby(["denomination", "posture"], as_index=False)
-                .agg(mean_proportion=("proportion", "mean"))
-            )
-
-            fig = px.line(
-                tmp,
-                x="denomination",
-                y="mean_proportion",
-                color="posture",
-                markers=True,
-                title="Mean proportion of heads by denomination and posture",
-                labels={
-                    "denomination": "Denomination",
-                    "mean_proportion": "Mean proportion heads",
-                    "posture": "Posture"
-                },
-                template="plotly_white"
-            )
-
-            fig.add_hline(
-                y=0.5,
-                line_dash="dash",
-                line_width=2,
-                annotation_text="Fair coin p = 0.5",
-                annotation_position="top left"
-            )
-
-            fig.update_yaxes(range=[0, 1])
-            fig.update_traces(line=dict(width=3), marker=dict(size=9))
-            fig.update_layout(height=500, margin=dict(l=20, r=20, t=70, b=40))
-
-            st.plotly_chart(fig, use_container_width=True)
-
-        with interaction_3:
-            tmp = (
-                plot_df
-                .groupby(["decade", "posture"], as_index=False)
-                .agg(mean_proportion=("proportion", "mean"))
-            )
-
-            fig = px.line(
-                tmp,
-                x="decade",
-                y="mean_proportion",
-                color="posture",
-                markers=True,
-                title="Mean proportion of heads by decade and posture",
-                labels={
-                    "decade": "Decade",
-                    "mean_proportion": "Mean proportion heads",
-                    "posture": "Posture"
-                },
-                template="plotly_white"
-            )
-
-            fig.add_hline(
-                y=0.5,
-                line_dash="dash",
-                line_width=2,
-                annotation_text="Fair coin p = 0.5",
-                annotation_position="top left"
-            )
-
-            fig.update_yaxes(range=[0, 1])
-            fig.update_traces(line=dict(width=3), marker=dict(size=9))
-            fig.update_layout(height=500, margin=dict(l=20, r=20, t=70, b=40))
-
-            st.plotly_chart(fig, use_container_width=True)
-
-    with block_plot_tab:
-        st.write("These plots check the blocking or nuisance factors.")
-
-        block_1, block_2 = st.tabs(["Flipper", "Starting side"])
-
-        with block_1:
-            fig = px.box(
-                plot_df,
-                x="flipper",
-                y="proportion",
-                color="flipper",
-                points="all",
-                title="Distribution of proportion heads by flipper",
-                labels={
-                    "flipper": "Flipper",
-                    "proportion": "Proportion heads"
-                },
-                template="plotly_white"
-            )
-
-            fig.add_hline(
-                y=0.5,
-                line_dash="dash",
-                line_width=2,
-                annotation_text="Fair coin p = 0.5",
-                annotation_position="top left"
-            )
-
-            fig.update_yaxes(range=[0, 1])
-            fig.update_layout(
-                height=500,
-                showlegend=False,
-                margin=dict(l=20, r=20, t=70, b=40)
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
-        with block_2:
-            fig = px.box(
-                plot_df,
-                x="starting_side",
-                y="proportion",
-                color="starting_side",
-                points="all",
-                title="Distribution of proportion heads by starting side",
-                labels={
-                    "starting_side": "Starting side",
-                    "proportion": "Proportion heads"
-                },
-                template="plotly_white"
-            )
-
-            fig.add_hline(
-                y=0.5,
-                line_dash="dash",
-                line_width=2,
-                annotation_text="Fair coin p = 0.5",
-                annotation_position="top left"
-            )
-
-            fig.update_yaxes(range=[0, 1])
-            fig.update_layout(
-                height=500,
-                showlegend=False,
-                margin=dict(l=20, r=20, t=70, b=40)
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
-    with distribution_plot_tab:
-        st.write("Heads count distribution")
-
-        fig = px.histogram(
-            plot_df,
-            x="heads",
-            nbins=11,
-            title="Distribution of heads counts per 10-flip trial",
-            labels={
-                "heads": "Heads out of 10",
-                "count": "Number of trials"
-            },
-            template="plotly_white"
-        )
-
-        fig.update_xaxes(dtick=1)
-        fig.update_layout(
-            height=450,
-            bargap=0.1,
-            margin=dict(l=20, r=20, t=70, b=40)
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    with diagnostics_tab:
-        st.write("Residual normality check")
-
-        if model is None:
-            st.warning("The model did not run, so residual checks are not available.")
+        if analysis_error:
+            st.error("R could not run the summaries/model.")
+            if analysis_output:
+                st.code(analysis_output, language="text")
+            st.write(analysis_error)
         else:
-            st.write(
-                """
-                The Q-Q plot checks whether the ANOVA residuals are approximately normal.
-                If the points mostly follow the straight line, the normality assumption is reasonable.
-                """
-            )
+            st.code(analysis_output or "R completed without printed output.", language="text")
 
-            fig = make_qq_plot(model)
-            st.plotly_chart(fig, use_container_width=True)
+        if analysis_messages:
+            with st.expander("Show R messages"):
+                st.code(analysis_messages, language="text")
 
-            residual_df = pd.DataFrame({
-                "Residual": model.resid,
-                "Fitted value": model.fittedvalues
-            })
+        with st.expander("Show R summary/model code"):
+            st.code(analysis_code, language="r")
 
-            st.divider()
+    with plot_tab:
+        plot_data_csv = results_df[cols].to_csv(index=False)
 
-            st.write("Residual histogram")
+        with st.spinner("Rendering ggplot images with R..."):
+            plots, plot_error = render_r_ggplots(plot_data_csv)
 
-            fig = px.histogram(
-                residual_df,
-                x="Residual",
-                nbins=15,
-                title="Histogram of model residuals",
-                labels={
-                    "Residual": "Residual",
-                    "count": "Frequency"
-                },
-                template="plotly_white"
-            )
+        if plots:
+            plot_titles = {
+                "01-treatment-means": "Mean proportion of heads by treatment",
+                "02-treatment-observed": "Observed proportions by treatment",
+                "03-decade-nuisance": "Nuisance-factor check by decade",
+                "04-flipper-nuisance": "Nuisance-factor check by flipper",
+                "05-qq-residuals": "Normal Q-Q plot of model residuals",
+                "06-residuals-fitted": "Residuals versus fitted values",
+            }
 
-            fig.add_vline(
-                x=0,
-                line_dash="dash",
-                line_width=2,
-                annotation_text="0",
-                annotation_position="top"
-            )
+            for plot_name, plot_bytes in plots:
+                st.image(
+                    plot_bytes,
+                    caption=plot_titles.get(plot_name, plot_name),
+                    use_container_width=True
+                )
 
-            fig.update_layout(
-                height=450,
-                bargap=0.1,
-                margin=dict(l=20, r=20, t=70, b=40)
-            )
+            if len(plots) < 6:
+                st.info(
+                    "Diagnostic plots will appear once there is enough data to fit the full model."
+                )
+        else:
+            st.error("R could not render the ggplot images.")
+            st.write(plot_error)
 
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.divider()
-
-            st.write("Residuals versus fitted values")
-
-            fig = px.scatter(
-                residual_df,
-                x="Fitted value",
-                y="Residual",
-                title="Residuals versus fitted values",
-                labels={
-                    "Fitted value": "Fitted value",
-                    "Residual": "Residual"
-                },
-                template="plotly_white"
-            )
-
-            fig.add_hline(
-                y=0,
-                line_dash="dash",
-                line_width=2,
-                annotation_text="0",
-                annotation_position="top left"
-            )
-
-            fig.update_layout(
-                height=500,
-                margin=dict(l=20, r=20, t=70, b=40)
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
+        with st.expander("Show R ggplot code"):
+            st.code(plot_code, language="r")
