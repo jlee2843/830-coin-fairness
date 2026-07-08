@@ -16,6 +16,103 @@ import streamlit as st
 
 st.set_page_config(page_title="Coin Fairness Dashboard", page_icon="🪙", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    .run-summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 12px 0 24px;
+    }
+    .run-summary-item,
+    .assigned-run-panel,
+    .flip-panel {
+        border: 1px solid rgba(127, 127, 127, 0.22);
+        border-radius: 8px;
+        background: rgba(127, 127, 127, 0.06);
+    }
+    .run-summary-item {
+        padding: 12px 14px;
+    }
+    .run-summary-label,
+    .assigned-label,
+    .flip-label {
+        color: rgba(127, 127, 127, 0.95);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+    }
+    .run-summary-value {
+        margin-top: 4px;
+        font-size: 1.8rem;
+        font-weight: 700;
+        line-height: 1.1;
+    }
+    .assigned-run-panel,
+    .flip-panel {
+        padding: 16px 18px;
+        margin: 8px 0 22px;
+    }
+    .assigned-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px 20px;
+    }
+    .assigned-value {
+        margin-top: 4px;
+        font-size: 1.05rem;
+        font-weight: 700;
+    }
+    .flip-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+    .flip-stat {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: rgba(127, 127, 127, 0.08);
+    }
+    .flip-value {
+        margin-top: 2px;
+        font-size: 1.55rem;
+        font-weight: 700;
+        line-height: 1.15;
+    }
+    .flip-history {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 10px 0 2px;
+    }
+    .flip-pill {
+        border-radius: 999px;
+        padding: 4px 9px;
+        font-size: 0.82rem;
+        font-weight: 700;
+        border: 1px solid rgba(127, 127, 127, 0.22);
+    }
+    .flip-pill-heads {
+        background: rgba(46, 160, 67, 0.18);
+    }
+    .flip-pill-tails {
+        background: rgba(59, 130, 246, 0.18);
+    }
+    @media (max-width: 760px) {
+        .run-summary,
+        .assigned-grid,
+        .flip-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 st.title("STAT 830 Project: Coin Fairness")
 st.write("Submit coin flip results and view the shared experiment results. One run is 10 flips.")
 
@@ -45,16 +142,20 @@ RESTRICTIONS = [
 
 cols = [
     "trial_id", "denomination", "decade",
-    "posture", "flipper", "picker", "recorder", "starting_side", "heads"
+    "posture", "flipper", "starting_side", "heads"
 ]
 
 schedule_cols = [
     "run_id", "replication", "denomination", "decade",
-    "posture", "flipper", "picker", "recorder", "starting_side"
+    "posture", "flipper", "starting_side"
+]
+
+assignment_cols = [
+    "denomination", "decade", "posture", "flipper", "starting_side"
 ]
 
 denominations = ["Nickel", "Dime", "Quarter"]
-decades = ["1980s", "2000s", "2010s"]
+decades = ["1980s", "2010s"]
 postures = ["Standing", "Sitting"]
 flippers = ["Jenny", "Josh", "Esther"]
 starting_sides = ["Heads", "Tails"]
@@ -89,7 +190,7 @@ def load_run_schedule():
         schedule["run_id"] = schedule["run_id"].astype(int)
         schedule["replication"] = schedule["replication"].astype("Int64")
 
-    for c in ["denomination", "decade", "posture", "flipper", "picker", "recorder", "starting_side"]:
+    for c in ["denomination", "decade", "posture", "flipper", "starting_side"]:
         schedule[c] = schedule[c].astype(str).str.strip().replace({"nan": ""})
 
     return schedule.sort_values("run_id").reset_index(drop=True)
@@ -99,10 +200,12 @@ def next_run_id_from_data(df, schedule):
     if len(schedule) == 0:
         return None
 
-    if len(df) == 0:
+    valid_df = valid_submitted_data(df, schedule)
+
+    if len(valid_df) == 0:
         return int(schedule["run_id"].min())
 
-    next_run_id = int(df["trial_id"].max()) + 1
+    next_run_id = int(valid_df["trial_id"].max()) + 1
 
     if next_run_id > int(schedule["run_id"].max()):
         return None
@@ -126,12 +229,85 @@ def schedule_progress(schedule, df):
     if len(schedule) == 0:
         return schedule.copy()
 
-    completed_ids = set(df["trial_id"].astype(int)) if len(df) > 0 else set()
+    valid_df = valid_submitted_data(df, schedule)
+    completed_ids = set(valid_df["trial_id"].astype(int)) if len(valid_df) > 0 else set()
     progress = schedule.copy()
     progress["complete"] = progress["run_id"].isin(completed_ids)
     progress["status"] = np.where(progress["complete"], "Complete", "Incomplete")
 
     return progress
+
+
+def mapped_valid_submitted_data(df, schedule):
+    if len(df) == 0 or len(schedule) == 0:
+        return df.iloc[0:0].copy()
+
+    schedule_key = schedule[["run_id"] + assignment_cols].copy()
+    submitted = df.reset_index(drop=True).copy()
+    used_run_ids = set()
+    used_row_indices = set()
+    matched_rows = []
+
+    def matching_schedule_rows(row, candidates):
+        matches = candidates
+
+        for c in assignment_cols:
+            matches = matches[matches[c].astype(str) == str(row[c])]
+
+        return matches
+
+    for idx, row in submitted.iterrows():
+        run_id = int(row["trial_id"])
+        candidates = schedule_key[schedule_key["run_id"] == run_id]
+        matches = matching_schedule_rows(row, candidates)
+
+        if len(matches) > 0 and run_id not in used_run_ids:
+            matched = row.copy()
+            matched["trial_id"] = run_id
+            matched["_source_trial_id"] = run_id
+            matched_rows.append(matched)
+            used_run_ids.add(run_id)
+            used_row_indices.add(idx)
+
+    available_schedule = schedule_key[~schedule_key["run_id"].isin(used_run_ids)]
+
+    for idx, row in submitted.iterrows():
+        if idx in used_row_indices:
+            continue
+
+        matches = matching_schedule_rows(row, available_schedule)
+
+        if len(matches) == 0:
+            continue
+
+        matched_run_id = int(matches.sort_values("run_id").iloc[0]["run_id"])
+        matched = row.copy()
+        matched["trial_id"] = matched_run_id
+        matched["_source_trial_id"] = int(row["trial_id"])
+        matched_rows.append(matched)
+        used_run_ids.add(matched_run_id)
+        used_row_indices.add(idx)
+        available_schedule = available_schedule[
+            available_schedule["run_id"] != matched_run_id
+        ]
+
+    if not matched_rows:
+        return df.iloc[0:0].copy()
+
+    valid_df = pd.DataFrame(matched_rows)
+    valid_df["trial_id"] = valid_df["trial_id"].astype(int)
+    valid_df["_source_trial_id"] = valid_df["_source_trial_id"].astype(int)
+
+    return valid_df.sort_values("trial_id").reset_index(drop=True)
+
+
+def valid_submitted_data(df, schedule):
+    valid_df = mapped_valid_submitted_data(df, schedule)
+
+    if len(valid_df) == 0:
+        return df.iloc[0:0].copy()
+
+    return clean_data(valid_df.drop(columns=["_source_trial_id"], errors="ignore"))
 
 
 def clean_data(df):
@@ -143,7 +319,7 @@ def clean_data(df):
 
     df = df[cols]
 
-    for c in ["denomination", "decade", "posture", "flipper", "picker", "recorder", "starting_side"]:
+    for c in ["denomination", "decade", "posture", "flipper", "starting_side"]:
         df[c] = df[c].astype(str).str.strip().replace({"nan": ""})
 
     df["trial_id"] = pd.to_numeric(df["trial_id"], errors="coerce")
@@ -199,8 +375,6 @@ def make_dummy_data():
                         "decade": decade,
                         "posture": posture,
                         "flipper": flippers[rep % len(flippers)],
-                        "picker": flippers[(rep + 1) % len(flippers)],
-                        "recorder": flippers[(rep + 2) % len(flippers)],
                         "starting_side": starting_sides[rep % len(starting_sides)],
                         "heads": int(rng.binomial(FLIPS_PER_TRIAL, p))
                     })
@@ -309,14 +483,29 @@ def save_to_github(df, sha):
     return r.json()
 
 
-def add_row_to_github(new_row):
+def add_row_to_github(new_row, schedule=None):
     old_df, sha = load_from_github()
+
+    if schedule is not None:
+        old_df = valid_submitted_data(old_df, schedule)
+
     new_trial_id = int(new_row["trial_id"].iloc[0])
 
-    if len(old_df) > 0 and new_trial_id in set(old_df["trial_id"].astype(int)):
-        raise RuntimeError(
-            f"Run ID {new_trial_id} already exists. Reload the dashboard to get the next run."
-        )
+    if len(old_df) > 0:
+        same_id = old_df[old_df["trial_id"].astype(int) == new_trial_id]
+
+        if len(same_id) > 0:
+            matching_same_id = same_id.copy()
+
+            for c in assignment_cols:
+                matching_same_id = matching_same_id[
+                    matching_same_id[c] == new_row[c].iloc[0]
+                ]
+
+            if len(matching_same_id) > 0:
+                raise RuntimeError(
+                    f"Run ID {new_trial_id} already exists. Reload the dashboard to get the next run."
+                )
 
     new_df = pd.concat(
         [old_df[cols], new_row[cols]],
@@ -330,6 +519,34 @@ def add_row_to_github(new_row):
     return refreshed
 
 
+def make_submission_row(run, heads):
+    return pd.DataFrame([{
+        "trial_id": int(run["run_id"]),
+        "denomination": run["denomination"],
+        "decade": run["decade"],
+        "posture": run["posture"],
+        "flipper": run["flipper"],
+        "starting_side": run["starting_side"],
+        "heads": int(heads)
+    }])
+
+
+def save_submission(new_row, schedule):
+    refreshed_df = add_row_to_github(new_row, schedule)
+    refreshed_valid_df = valid_submitted_data(refreshed_df, schedule)
+    refreshed_progress = schedule_progress(schedule, refreshed_valid_df)
+    refreshed_next_run_id = next_run_id_from_data(refreshed_valid_df, schedule)
+    refreshed_next_run = scheduled_run(schedule, refreshed_next_run_id)
+
+    return (
+        refreshed_df,
+        refreshed_valid_df,
+        refreshed_progress,
+        refreshed_next_run_id,
+        refreshed_next_run,
+    )
+
+
 def delete_trial_from_github(trial_id):
     old_df, sha = load_from_github()
 
@@ -339,6 +556,34 @@ def delete_trial_from_github(trial_id):
     if len(new_df) == old_count:
         raise RuntimeError(f"Trial ID {trial_id} was not found.")
 
+    save_to_github(new_df, sha)
+
+    refreshed, _ = load_from_github()
+    return refreshed
+
+
+def delete_valid_trial_from_github(trial_id, schedule):
+    old_df, sha = load_from_github()
+    mapped_df = mapped_valid_submitted_data(old_df, schedule)
+
+    matches = mapped_df[mapped_df["trial_id"].astype(int) == int(trial_id)]
+
+    if len(matches) == 0:
+        raise RuntimeError(f"Run ID {trial_id} was not found in the current schedule.")
+
+    row = matches.iloc[0]
+    source_trial_id = int(row["_source_trial_id"])
+    delete_mask = old_df["trial_id"].astype(int) == source_trial_id
+
+    for c in assignment_cols:
+        delete_mask = delete_mask & (old_df[c].astype(str) == str(row[c]))
+
+    delete_mask = delete_mask & (old_df["heads"].astype(int) == int(row["heads"]))
+
+    if not delete_mask.any():
+        raise RuntimeError(f"Run ID {trial_id} could not be matched to a saved CSV row.")
+
+    new_df = old_df[~delete_mask].copy()
     save_to_github(new_df, sha)
 
     refreshed, _ = load_from_github()
@@ -472,14 +717,15 @@ except Exception as e:
     st.stop()
 
 run_schedule = load_run_schedule()
-next_run_id = next_run_id_from_data(df, run_schedule)
+valid_df = valid_submitted_data(df, run_schedule)
+next_run_id = next_run_id_from_data(valid_df, run_schedule)
 next_run = scheduled_run(run_schedule, next_run_id)
-run_progress = schedule_progress(run_schedule, df)
+run_progress = schedule_progress(run_schedule, valid_df)
 
 if data_mode == "Dummy data":
     results_df = make_dummy_data()
 else:
-    results_df = df
+    results_df = valid_df
 
 
 submit_tab, results_tab, instructions_tab = st.tabs([
@@ -508,56 +754,195 @@ with submit_tab:
         completed_count = int(run_progress["complete"].sum())
         total_runs = len(run_progress)
 
-        p1, p2, p3 = st.columns(3)
-        with p1:
-            st.metric("Next run ID", int(next_run["run_id"]))
-        with p2:
-            st.metric("Completed runs", f"{completed_count} / {total_runs}")
-        with p3:
-            st.metric("Remaining runs", total_runs - completed_count)
+        st.markdown(
+            f"""
+            <div class="run-summary">
+                <div class="run-summary-item">
+                    <div class="run-summary-label">Next run</div>
+                    <div class="run-summary-value">{int(next_run["run_id"])}</div>
+                </div>
+                <div class="run-summary-item">
+                    <div class="run-summary-label">Completed</div>
+                    <div class="run-summary-value">{completed_count} / {total_runs}</div>
+                </div>
+                <div class="run-summary-item">
+                    <div class="run-summary-label">Remaining</div>
+                    <div class="run-summary-value">{total_runs - completed_count}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-        st.markdown("### Assigned run")
-        a1, a2, a3 = st.columns(3)
-        with a1:
-            st.write(f"**Replication:** {int(next_run['replication'])}")
-            st.write(f"**Denomination:** {next_run['denomination']}")
-        with a2:
-            st.write(f"**Decade:** {next_run['decade']}")
-            st.write(f"**Posture:** {next_run['posture']}")
-        with a3:
-            st.write(f"**Flipper:** {next_run['flipper']}")
-            st.write(f"**Picker:** {next_run['picker']}")
-            st.write(f"**Recorder:** {next_run['recorder']}")
-            st.write(f"**Starting side:** {next_run['starting_side']}")
+        st.markdown(
+            f"""
+            <div class="assigned-run-panel">
+                <div class="assigned-grid">
+                    <div>
+                        <div class="assigned-label">Replication</div>
+                        <div class="assigned-value">{int(next_run["replication"])}</div>
+                    </div>
+                    <div>
+                        <div class="assigned-label">Denomination</div>
+                        <div class="assigned-value">{next_run["denomination"]}</div>
+                    </div>
+                    <div>
+                        <div class="assigned-label">Decade</div>
+                        <div class="assigned-value">{next_run["decade"]}</div>
+                    </div>
+                    <div>
+                        <div class="assigned-label">Posture</div>
+                        <div class="assigned-value">{next_run["posture"]}</div>
+                    </div>
+                    <div>
+                        <div class="assigned-label">Flipper</div>
+                        <div class="assigned-value">{next_run["flipper"]}</div>
+                    </div>
+                    <div>
+                        <div class="assigned-label">Starting side</div>
+                        <div class="assigned-value">{next_run["starting_side"]}</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        flip_state_key = "current_flip_results"
+        flip_run_key = "current_flip_run_id"
+
+        if st.session_state.get(flip_run_key) != int(next_run["run_id"]):
+            st.session_state[flip_state_key] = []
+            st.session_state[flip_run_key] = int(next_run["run_id"])
+
+        st.markdown("### Track this run")
+
+        flip_results = st.session_state.get(flip_state_key, [])
+        live_heads = flip_results.count("Heads")
+        live_tails = flip_results.count("Tails")
+        flips_recorded = len(flip_results)
+
+        st.markdown(
+            f"""
+            <div class="flip-panel">
+                <div class="flip-grid">
+                    <div class="flip-stat">
+                        <div class="flip-label">Flips recorded</div>
+                        <div class="flip-value">{flips_recorded} / {FLIPS_PER_TRIAL}</div>
+                    </div>
+                    <div class="flip-stat">
+                        <div class="flip-label">Heads</div>
+                        <div class="flip-value">{live_heads}</div>
+                    </div>
+                    <div class="flip-stat">
+                        <div class="flip-label">Tails</div>
+                        <div class="flip-value">{live_tails}</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.progress(flips_recorded / FLIPS_PER_TRIAL)
+
+        b1, b2, b3, b4 = st.columns([1.25, 1.25, 1, 1])
+        with b1:
+            if st.button(
+                "Heads",
+                disabled=flips_recorded >= FLIPS_PER_TRIAL,
+                use_container_width=True,
+                type="primary"
+            ):
+                st.session_state[flip_state_key].append("Heads")
+                st.rerun()
+        with b2:
+            if st.button(
+                "Tails",
+                disabled=flips_recorded >= FLIPS_PER_TRIAL,
+                use_container_width=True
+            ):
+                st.session_state[flip_state_key].append("Tails")
+                st.rerun()
+        with b3:
+            if st.button(
+                "Undo",
+                disabled=flips_recorded == 0,
+                use_container_width=True
+            ):
+                st.session_state[flip_state_key].pop()
+                st.rerun()
+        with b4:
+            if st.button(
+                "Reset",
+                disabled=flips_recorded == 0,
+                use_container_width=True
+            ):
+                st.session_state[flip_state_key] = []
+                st.rerun()
+
+        if flip_results:
+            history_html = "".join(
+                (
+                    f'<span class="flip-pill flip-pill-{x.lower()}">'
+                    f'{i + 1}: {x[0]}</span>'
+                )
+                for i, x in enumerate(flip_results)
+            )
+            st.markdown(
+                f'<div class="flip-history">{history_html}</div>',
+                unsafe_allow_html=True
+            )
+
+        if st.button(
+            "Submit tracked run",
+            disabled=flips_recorded != FLIPS_PER_TRIAL,
+            use_container_width=True,
+            type="primary"
+        ):
+            new_row = make_submission_row(next_run, live_heads)
+
+            try:
+                (
+                    df,
+                    valid_df,
+                    run_progress,
+                    next_run_id,
+                    next_run,
+                ) = save_submission(new_row, run_schedule)
+                st.session_state[flip_state_key] = []
+                st.session_state["submission_saved"] = True
+                st.rerun()
+            except Exception as e:
+                st.error("Submission failed.")
+                st.write(str(e))
+
+        st.markdown("### Or enter the total")
 
         with st.form("trial_form", clear_on_submit=True):
-            st.markdown("### Response")
             heads = st.selectbox(
                 "Heads out of 10",
                 list(range(FLIPS_PER_TRIAL + 1)),
                 index=FLIPS_PER_TRIAL // 2
             )
 
-            submitted = st.form_submit_button("Submit result")
+            submitted = st.form_submit_button(
+                "Submit entered total",
+                use_container_width=True
+            )
 
         if submitted:
-            new_row = pd.DataFrame([{
-                "trial_id": int(next_run["run_id"]),
-                "denomination": next_run["denomination"],
-                "decade": next_run["decade"],
-                "posture": next_run["posture"],
-                "flipper": next_run["flipper"],
-                "picker": next_run["picker"],
-                "recorder": next_run["recorder"],
-                "starting_side": next_run["starting_side"],
-                "heads": int(heads)
-            }])
+            new_row = make_submission_row(next_run, heads)
 
             try:
-                df = add_row_to_github(new_row)
-                run_progress = schedule_progress(run_schedule, df)
-                next_run_id = next_run_id_from_data(df, run_schedule)
-                next_run = scheduled_run(run_schedule, next_run_id)
+                (
+                    df,
+                    valid_df,
+                    run_progress,
+                    next_run_id,
+                    next_run,
+                ) = save_submission(new_row, run_schedule)
+                st.session_state[flip_state_key] = []
                 st.session_state["submission_saved"] = True
                 st.rerun()
             except Exception as e:
@@ -573,9 +958,9 @@ with submit_tab:
     else:
         progress_display = run_progress.copy()
 
-        if len(df) > 0:
+        if len(valid_df) > 0:
             submitted_heads = (
-                df[["trial_id", "heads"]]
+                valid_df[["trial_id", "heads"]]
                 .drop_duplicates(subset=["trial_id"], keep="last")
                 .rename(columns={"trial_id": "run_id", "heads": "submitted_heads"})
             )
@@ -604,8 +989,26 @@ with submit_tab:
             "proportion_heads",
         ]
 
+        def highlight_completed_run(row):
+            if row["status"] == "Complete":
+                return ["background-color: rgba(46, 160, 67, 0.22)"] * len(row)
+            return [""] * len(row)
+
+        styled_progress = (
+            progress_display[display_cols]
+            .style
+            .format(
+                {
+                    "submitted_heads": "{:.0f}",
+                    "proportion_heads": "{:.1f}",
+                },
+                na_rep="None"
+            )
+            .apply(highlight_completed_run, axis=1)
+        )
+
         st.dataframe(
-            progress_display[display_cols],
+            styled_progress,
             use_container_width=True,
             hide_index=True
         )
@@ -621,18 +1024,19 @@ with submit_tab:
 
     st.subheader("Current shared data")
 
-    if len(df) == 0:
+    if len(valid_df) == 0:
         st.info("No data has been submitted yet.")
     else:
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(valid_df, use_container_width=True)
 
         st.download_button(
             "Download current CSV",
-            data=df[cols].to_csv(index=False).encode("utf-8"),
+            data=valid_df[cols].to_csv(index=False).encode("utf-8"),
             file_name="coin_experiment_data.csv",
             mime="text/csv"
         )
 
+    if len(valid_df) > 0:
         st.divider()
         st.subheader("Delete a row")
 
@@ -640,7 +1044,7 @@ with submit_tab:
 
         delete_id = st.selectbox(
             "Choose Trial ID to delete",
-            sorted(df["trial_id"].unique())
+            sorted(valid_df["trial_id"].unique())
         )
 
         confirm_delete = st.checkbox("I confirm that I want to delete this row.")
@@ -650,13 +1054,14 @@ with submit_tab:
                 st.error("Check the confirmation box first.")
             else:
                 try:
-                    df = delete_trial_from_github(int(delete_id))
+                    df = delete_valid_trial_from_github(int(delete_id), run_schedule)
                     st.success(f"Trial ID {delete_id} was deleted.")
                     st.rerun()
                 except Exception as e:
                     st.error("Delete failed.")
                     st.write(str(e))
 
+    if len(df) > 0:
         st.divider()
         st.subheader("Erase all data")
 

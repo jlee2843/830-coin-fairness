@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 DENOMINATIONS = ["Nickel", "Dime", "Quarter"]
-DECADES = ["1980s", "2000s", "2010s"]
+DECADES = ["1980s", "2010s"]
 POSTURES = ["Standing", "Sitting"]
 FLIPPERS = ["Jenny", "Josh", "Esther"]
 STARTING_SIDES = ["Heads", "Tails"]
@@ -28,19 +28,12 @@ def build_schedule(replications, seed):
             FLIPPERS,
             STARTING_SIDES,
         ):
-            picker, recorder = rng.sample(
-                [person for person in FLIPPERS if person != flipper],
-                k=2,
-            )
-
             replication_rows.append({
                 "replication": replication,
                 "denomination": denomination,
                 "decade": decade,
                 "posture": posture,
                 "flipper": flipper,
-                "picker": picker,
-                "recorder": recorder,
                 "starting_side": starting_side,
             })
 
@@ -63,8 +56,6 @@ def write_schedule(rows, output_path):
         "decade",
         "posture",
         "flipper",
-        "picker",
-        "recorder",
         "starting_side",
     ]
 

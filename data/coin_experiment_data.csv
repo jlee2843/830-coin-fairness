@@ -1,6 +1,5 @@
-trial_id,denomination,decade,posture,flipper,picker,recorder,starting_side,heads
-1,Dime,2000s,Standing,Josh,Jenny,Esther,Heads,4
-2,Nickel,2010s,Sitting,Josh,Esther,Jenny,Heads,6
-3,Quarter,2010s,Standing,Josh,Jenny,Esther,Heads,2
-4,Quarter,2010s,Sitting,Jenny,Esther,Josh,Tails,6
-5,Nickel,2010s,Sitting,Josh,Jenny,Esther,Tails,9
+trial_id,denomination,decade,posture,flipper,starting_side,heads
+1,Nickel,2010s,Sitting,Josh,Heads,6
+2,Quarter,2010s,Standing,Josh,Heads,2
+3,Quarter,2010s,Sitting,Jenny,Tails,6
+4,Nickel,2010s,Sitting,Josh,Tails,9
