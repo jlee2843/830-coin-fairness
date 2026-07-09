@@ -100,6 +100,20 @@ st.markdown(
     .flip-pill-tails {
         background: rgba(59, 130, 246, 0.18);
     }
+    div[data-testid="stHorizontalBlock"]:has(
+        div[data-testid="column"]:first-child button[kind="primary"]
+    ) > div[data-testid="column"]:nth-child(2) button:not(:disabled) {
+        background: #2563eb;
+        border-color: #2563eb;
+        color: white;
+    }
+    div[data-testid="stHorizontalBlock"]:has(
+        div[data-testid="column"]:first-child button[kind="primary"]
+    ) > div[data-testid="column"]:nth-child(2) button:not(:disabled):hover {
+        background: #1d4ed8;
+        border-color: #1d4ed8;
+        color: white;
+    }
     .calendar-grid {
         display: grid;
         grid-template-columns: repeat(7, minmax(0, 1fr));
