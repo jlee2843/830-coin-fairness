@@ -1,7 +1,9 @@
 import base64
+import calendar
 import subprocess
 import tempfile
 from datetime import datetime
+from html import escape
 from io import StringIO
 from pathlib import Path
 
@@ -98,11 +100,78 @@ st.markdown(
     .flip-pill-tails {
         background: rgba(59, 130, 246, 0.18);
     }
+    .calendar-grid {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        border: 1px solid rgba(127, 127, 127, 0.22);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-top: 12px;
+    }
+    .calendar-weekday {
+        padding: 8px 10px;
+        background: rgba(127, 127, 127, 0.12);
+        color: rgba(127, 127, 127, 0.95);
+        font-size: 0.76rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+        border-right: 1px solid rgba(127, 127, 127, 0.18);
+    }
+    .calendar-day {
+        position: relative;
+        min-height: 96px;
+        padding: 8px;
+        border-top: 1px solid rgba(127, 127, 127, 0.18);
+        border-right: 1px solid rgba(127, 127, 127, 0.18);
+        background: rgba(127, 127, 127, 0.035);
+    }
+    .calendar-day-muted {
+        color: rgba(127, 127, 127, 0.55);
+        background: rgba(127, 127, 127, 0.015);
+    }
+    .calendar-day-today {
+        box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.65);
+    }
+    .calendar-day-number {
+        font-size: 0.85rem;
+        font-weight: 800;
+        margin-bottom: 6px;
+    }
+    .calendar-event {
+        display: block;
+        margin-top: 4px;
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 0.76rem;
+        font-weight: 700;
+        line-height: 1.2;
+        overflow-wrap: anywhere;
+    }
+    .calendar-event-due {
+        background: rgba(239, 68, 68, 0.22);
+        border: 1px solid rgba(239, 68, 68, 0.38);
+    }
+    .calendar-event-meeting {
+        background: rgba(59, 130, 246, 0.20);
+        border: 1px solid rgba(59, 130, 246, 0.35);
+    }
+    .calendar-event-consultation {
+        background: rgba(46, 160, 67, 0.20);
+        border: 1px solid rgba(46, 160, 67, 0.35);
+    }
     @media (max-width: 760px) {
         .run-summary,
         .assigned-grid,
         .flip-grid {
             grid-template-columns: 1fr;
+        }
+        .calendar-day {
+            min-height: 76px;
+            padding: 6px;
+        }
+        .calendar-event {
+            font-size: 0.68rem;
         }
     }
     </style>
@@ -160,12 +229,37 @@ starting_sides = ["Heads", "Tails"]
 github_token = st.secrets.get("GITHUB_TOKEN", "")
 github_repo = st.secrets.get("GITHUB_REPO", "")
 github_path = st.secrets.get("GITHUB_PATH", "data/coin_experiment_data.csv")
+calendar_github_path = st.secrets.get("CALENDAR_GITHUB_PATH", "data/calendar_events.csv")
 github_branch = st.secrets.get("GITHUB_BRANCH", "main")
 delete_password = st.secrets.get("DELETE_PASSWORD", "")
 
 
 def empty_data():
     return pd.DataFrame(columns=cols)
+
+
+def empty_calendar_data():
+    return pd.DataFrame(columns=["date", "time", "type", "title"])
+
+
+def clean_calendar_data(df):
+    df = df.copy()
+
+    for c in ["date", "time", "type", "title"]:
+        if c not in df.columns:
+            df[c] = ""
+
+    df = df[["date", "time", "type", "title"]]
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["time"] = df["time"].astype(str).str.strip().replace({"nan": ""})
+    df["type"] = df["type"].astype(str).str.strip().replace({"nan": ""})
+    df.loc[~df["type"].isin(["Due", "Meeting", "Consultation"]), "type"] = "Meeting"
+    df["title"] = df["title"].astype(str).str.strip()
+    df = df.dropna(subset=["date"])
+    df = df[df["title"] != ""]
+    df["date"] = df["date"].astype(str)
+
+    return df.sort_values(["date", "time", "type", "title"]).reset_index(drop=True)
 
 
 def load_run_schedule():
@@ -379,6 +473,60 @@ def make_dummy_data():
                     trial_id += 1
 
     return clean_data(pd.DataFrame(rows))
+
+
+def render_calendar_html(year, month, events):
+    month_calendar = calendar.Calendar(firstweekday=6)
+    weeks = month_calendar.monthdatescalendar(year, month)
+    today = datetime.now().date()
+    event_map = {}
+
+    for event in events:
+        event_date = datetime.fromisoformat(event["date"]).date()
+        event_time = str(event.get("time", "")).strip()
+        event_type = str(event.get("type", "Meeting")).strip()
+        event_title = str(event.get("title", "")).strip()
+        event_time_label = ""
+
+        if event_time:
+            try:
+                parsed_time = datetime.strptime(event_time, "%H:%M")
+                event_time_label = parsed_time.strftime("%I:%M %p").lstrip("0")
+            except ValueError:
+                event_time_label = event_time
+
+        event_label = f"{event_time_label} [{event_type}] {event_title}".strip()
+        event_class = event_type.lower().replace(" ", "-")
+        event_map.setdefault(event_date, []).append((event_label, event_class))
+
+    parts = ['<div class="calendar-grid">']
+
+    for day_name in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]:
+        parts.append(f'<div class="calendar-weekday">{day_name}</div>')
+
+    for week in weeks:
+        for day in week:
+            classes = ["calendar-day"]
+
+            if day.month != month:
+                classes.append("calendar-day-muted")
+
+            if day == today:
+                classes.append("calendar-day-today")
+
+            parts.append(f'<div class="{" ".join(classes)}">')
+            parts.append(f'<div class="calendar-day-number">{day.day}</div>')
+
+            for event_title, event_class in event_map.get(day, []):
+                parts.append(
+                    f'<span class="calendar-event calendar-event-{escape(event_class)}">'
+                    f'{escape(event_title)}</span>'
+                )
+
+            parts.append("</div>")
+
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def r_data_path():
@@ -602,6 +750,34 @@ def full_r_script(csv_path):
     return r_analysis_code(csv_path) + "\n\n" + r_ggplot_code(csv_path)
 
 
+def treatment_summary_table(df):
+    return (
+        df
+        .groupby(["denomination", "posture"], as_index=False)
+        .agg(
+            runs=("trial_id", "count"),
+            total_heads=("heads", "sum"),
+            total_flips=("total", "sum"),
+            mean_proportion=("proportion", "mean")
+        )
+        .assign(p_hat=lambda x: x["total_heads"] / x["total_flips"])
+    )
+
+
+def nuisance_summary_table(df):
+    return (
+        df
+        .groupby(["decade", "flipper", "starting_side"], as_index=False)
+        .agg(
+            runs=("trial_id", "count"),
+            total_heads=("heads", "sum"),
+            total_flips=("total", "sum"),
+            mean_proportion=("proportion", "mean")
+        )
+        .assign(p_hat=lambda x: x["total_heads"] / x["total_flips"])
+    )
+
+
 def r_escape_path(path):
     return str(path).replace("\\", "/").replace('"', '\\"')
 
@@ -719,8 +895,12 @@ def gh_headers():
     }
 
 
+def gh_url_for(path):
+    return f"https://api.github.com/repos/{github_repo}/contents/{path}"
+
+
 def gh_url():
-    return f"https://api.github.com/repos/{github_repo}/contents/{github_path}"
+    return gh_url_for(github_path)
 
 
 def load_from_github():
@@ -782,6 +962,121 @@ def save_to_github(df, sha):
         raise RuntimeError(f"GitHub save failed: {r.text}")
 
     return r.json()
+
+
+def load_calendar_from_github():
+    missing = missing_settings()
+    if missing:
+        raise RuntimeError(f"Missing Streamlit secrets: {missing}")
+
+    r = requests.get(
+        gh_url_for(calendar_github_path),
+        headers=gh_headers(),
+        params={"ref": github_branch},
+        timeout=20
+    )
+
+    if r.status_code == 404:
+        return empty_calendar_data(), None
+
+    if r.status_code != 200:
+        raise RuntimeError(f"GitHub calendar load failed: {r.text}")
+
+    payload = r.json()
+    sha = payload.get("sha")
+    content = payload.get("content", "")
+
+    if content.strip() == "":
+        return empty_calendar_data(), sha
+
+    csv_text = base64.b64decode(content).decode("utf-8")
+
+    if csv_text.strip() == "":
+        return empty_calendar_data(), sha
+
+    return clean_calendar_data(pd.read_csv(StringIO(csv_text))), sha
+
+
+def save_calendar_to_github(df, sha):
+    df = clean_calendar_data(df)
+    csv_text = df.to_csv(index=False)
+    encoded = base64.b64encode(csv_text.encode("utf-8")).decode("utf-8")
+
+    data = {
+        "message": f"Update calendar events {datetime.now().isoformat(timespec='seconds')}",
+        "content": encoded,
+        "branch": github_branch
+    }
+
+    if sha is not None:
+        data["sha"] = sha
+
+    r = requests.put(
+        gh_url_for(calendar_github_path),
+        headers=gh_headers(),
+        json=data,
+        timeout=20
+    )
+
+    if r.status_code not in [200, 201]:
+        raise RuntimeError(f"GitHub calendar save failed: {r.text}")
+
+    return r.json()
+
+
+def add_calendar_event_to_github(event_date, event_time, event_type, event_title):
+    old_df, sha = load_calendar_from_github()
+    new_df = pd.concat(
+        [
+            old_df,
+            pd.DataFrame([{
+                "date": event_date.isoformat(),
+                "time": event_time.strftime("%H:%M"),
+                "type": event_type,
+                "title": event_title.strip()
+            }])
+        ],
+        ignore_index=True
+    )
+    save_calendar_to_github(new_df, sha)
+    refreshed, _ = load_calendar_from_github()
+    return refreshed
+
+
+def delete_calendar_event_from_github(event_date, event_time, event_type, event_title):
+    old_df, sha = load_calendar_from_github()
+    event_date_text = event_date.isoformat()
+    event_time_text = event_time.strip()
+    event_type_text = event_type.strip()
+    event_title_text = event_title.strip()
+
+    matches = old_df[
+        (old_df["date"] == event_date_text)
+        & (old_df["time"] == event_time_text)
+        & (old_df["type"] == event_type_text)
+        & (old_df["title"] == event_title_text)
+    ]
+
+    if len(matches) == 0:
+        raise RuntimeError("Calendar event was not found.")
+
+    new_df = old_df.drop(index=matches.index[0]).reset_index(drop=True)
+    save_calendar_to_github(new_df, sha)
+    refreshed, _ = load_calendar_from_github()
+    return refreshed
+
+
+def clear_calendar_date_from_github(event_date):
+    old_df, sha = load_calendar_from_github()
+    event_date_text = event_date.isoformat()
+    new_df = old_df[old_df["date"] != event_date_text].copy()
+
+    if len(new_df) == len(old_df):
+        raise RuntimeError("No calendar events were found for that date.")
+
+    save_calendar_to_github(new_df, sha)
+    refreshed, _ = load_calendar_from_github()
+    return refreshed
 
 
 def add_row_to_github(new_row, schedule=None):
@@ -943,7 +1238,7 @@ else:
 submit_tab, results_tab, instructions_tab = st.tabs([
     "Submit and edit data",
     "View results and analysis",
-    "Experiment instructions",
+    "Experiment Housekeeping",
 ])
 
 submission_saved = st.session_state.pop("submission_saved", False)
@@ -1307,7 +1602,7 @@ with submit_tab:
 
 
 with instructions_tab:
-    st.subheader("Experiment instructions")
+    st.subheader("Experiment Housekeeping")
 
     st.markdown(f"**Vocabulary:** One run = {FLIPS_PER_TRIAL} flips.")
 
@@ -1329,6 +1624,114 @@ with instructions_tab:
     st.markdown("### Restrictions")
     for item in RESTRICTIONS:
         st.markdown(f"- {item}")
+
+    st.divider()
+    st.markdown("### July 2026")
+
+    selected_month = 7
+    selected_year = 2026
+
+    try:
+        calendar_df, _ = load_calendar_from_github()
+    except Exception as e:
+        calendar_df = empty_calendar_data()
+        st.error("Could not load calendar events from GitHub.")
+        st.write(str(e))
+
+    st.caption(f"Calendar events are saved to: `{github_repo}/{calendar_github_path}`")
+
+    july_start = datetime(selected_year, 7, 1).date()
+    july_end = datetime(selected_year, 7, 31).date()
+
+    with st.form("calendar_event_form", clear_on_submit=True):
+        event_date_col, event_time_col, event_type_col, event_title_col = st.columns([1, 1, 1, 2])
+
+        with event_date_col:
+            event_date = st.date_input(
+                "July date",
+                value=july_start,
+                min_value=july_start,
+                max_value=july_end
+            )
+
+        with event_time_col:
+            event_time = st.time_input("Time", value=datetime(2026, 7, 1, 9, 0).time())
+
+        with event_type_col:
+            event_type = st.selectbox("Type", ["Meeting", "Due", "Consultation"])
+
+        with event_title_col:
+            event_title = st.text_input("Event")
+
+        add_event = st.form_submit_button("Add event")
+
+    if add_event and event_title.strip():
+        try:
+            calendar_df = add_calendar_event_to_github(
+                event_date,
+                event_time,
+                event_type,
+                event_title
+            )
+            st.success("Calendar event was saved.")
+            st.rerun()
+        except Exception as e:
+            st.error("Calendar event could not be saved.")
+            st.write(str(e))
+
+    events = calendar_df.to_dict("records")
+    selected_month_events = [
+        event for event in events
+        if datetime.fromisoformat(event["date"]).date().year == selected_year
+        and datetime.fromisoformat(event["date"]).date().month == selected_month
+    ]
+
+    if selected_month_events:
+        event_options = [
+            (
+                f'{event["date"]} {event.get("time", "").strip()} '
+                f'[{event.get("type", "Meeting")}] - {event["title"]}'
+            ).replace("  [", " [")
+            for event in selected_month_events
+        ]
+        event_to_remove = st.selectbox("Remove one event", event_options)
+
+        if st.button("Remove selected event"):
+            remove_index = event_options.index(event_to_remove)
+            event_to_delete = selected_month_events[remove_index]
+            try:
+                calendar_df = delete_calendar_event_from_github(
+                    datetime.fromisoformat(event_to_delete["date"]).date(),
+                    event_to_delete.get("time", ""),
+                    event_to_delete.get("type", "Meeting"),
+                    event_to_delete["title"]
+                )
+                st.success("Calendar event was removed.")
+                st.rerun()
+            except Exception as e:
+                st.error("Calendar event could not be removed.")
+                st.write(str(e))
+
+        clear_date = st.date_input(
+            "Date to clear",
+            value=july_start,
+            min_value=july_start,
+            max_value=july_end
+        )
+
+        if st.button("Clear selected date"):
+            try:
+                calendar_df = clear_calendar_date_from_github(clear_date)
+                st.success(f"All events on {clear_date.isoformat()} were cleared.")
+                st.rerun()
+            except Exception as e:
+                st.error("Date could not be cleared.")
+                st.write(str(e))
+
+    st.markdown(
+        render_calendar_html(selected_year, selected_month, calendar_df.to_dict("records")),
+        unsafe_allow_html=True
+    )
 
 
 with results_tab:
@@ -1423,10 +1826,28 @@ with results_tab:
             )
 
         if analysis_error:
-            st.error("R could not run the summaries/model.")
+            st.warning(
+                "R could not run on this deployment, so the summaries below are computed in Python."
+            )
             if analysis_output:
                 st.code(analysis_output, language="text")
-            st.write(analysis_error)
+            st.caption(analysis_error)
+
+            st.write("Treatment summary")
+            st.dataframe(
+                treatment_summary_table(results_df),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.write("Nuisance-factor summary")
+            st.dataframe(
+                nuisance_summary_table(results_df),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.info("The R ANOVA/model output will appear when Rscript is available.")
         else:
             st.code(analysis_output or "R completed without printed output.", language="text")
 
@@ -1465,8 +1886,38 @@ with results_tab:
                     "Diagnostic plots will appear once there is enough data to fit the full model."
                 )
         else:
-            st.error("R could not render the ggplot images.")
-            st.write(plot_error)
+            st.warning(
+                "R could not render ggplot images on this deployment, so these preview charts are computed in Python."
+            )
+            st.caption(plot_error)
+
+            treatment_chart = treatment_summary_table(results_df).copy()
+            treatment_chart["treatment"] = (
+                treatment_chart["denomination"].astype(str)
+                + " / "
+                + treatment_chart["posture"].astype(str)
+            )
+
+            st.write("Mean proportion of heads by treatment")
+            st.bar_chart(
+                treatment_chart.set_index("treatment")["mean_proportion"],
+                use_container_width=True
+            )
+
+            nuisance_chart = nuisance_summary_table(results_df).copy()
+            nuisance_chart["nuisance_group"] = (
+                nuisance_chart["decade"].astype(str)
+                + " / "
+                + nuisance_chart["flipper"].astype(str)
+                + " / "
+                + nuisance_chart["starting_side"].astype(str)
+            )
+
+            st.write("Mean proportion of heads by nuisance-factor group")
+            st.bar_chart(
+                nuisance_chart.set_index("nuisance_group")["mean_proportion"],
+                use_container_width=True
+            )
 
         with st.expander("Show R ggplot code"):
             st.code(plot_code, language="r")
