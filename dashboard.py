@@ -100,20 +100,6 @@ st.markdown(
     .flip-pill-tails {
         background: rgba(59, 130, 246, 0.18);
     }
-    div[data-testid="stHorizontalBlock"]:has(
-        div[data-testid="column"]:first-child button[kind="primary"]
-    ) > div[data-testid="column"]:nth-child(2) button:not(:disabled) {
-        background: #2563eb;
-        border-color: #2563eb;
-        color: white;
-    }
-    div[data-testid="stHorizontalBlock"]:has(
-        div[data-testid="column"]:first-child button[kind="primary"]
-    ) > div[data-testid="column"]:nth-child(2) button:not(:disabled):hover {
-        background: #1d4ed8;
-        border-color: #1d4ed8;
-        color: white;
-    }
     .calendar-grid {
         display: grid;
         grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -1125,8 +1111,7 @@ def add_row_to_github(new_row, schedule=None):
     new_df = clean_data(new_df)
     save_to_github(new_df, sha)
 
-    refreshed, _ = load_from_github()
-    return refreshed
+    return new_df
 
 
 def make_submission_row(run, heads):
@@ -1236,6 +1221,11 @@ except Exception as e:
     st.error("Could not load data from GitHub.")
     st.write(str(e))
     st.stop()
+
+fresh_saved_csv = st.session_state.pop("fresh_saved_data_csv", None)
+
+if fresh_saved_csv:
+    df = clean_data(pd.read_csv(StringIO(fresh_saved_csv)))
 
 run_schedule = load_run_schedule()
 valid_df = valid_submitted_data(df, run_schedule)
@@ -1433,6 +1423,7 @@ with submit_tab:
                 ) = save_submission(new_row, run_schedule)
                 st.session_state[flip_state_key] = []
                 st.session_state["submission_saved"] = True
+                st.session_state["fresh_saved_data_csv"] = df[cols].to_csv(index=False)
                 st.rerun()
             except Exception as e:
                 st.error("Submission failed.")
@@ -1465,6 +1456,7 @@ with submit_tab:
                 ) = save_submission(new_row, run_schedule)
                 st.session_state[flip_state_key] = []
                 st.session_state["submission_saved"] = True
+                st.session_state["fresh_saved_data_csv"] = df[cols].to_csv(index=False)
                 st.rerun()
             except Exception as e:
                 st.error("Submission failed.")
