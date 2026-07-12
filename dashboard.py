@@ -1516,13 +1516,10 @@ with submit_tab:
 
     st.divider()
 
-    show_data_tools = st.checkbox(
-        "Show full run list, current data, and edit tools",
-        value=False,
-        key=DATA_TOOLS_KEY
-    )
-
-    if show_data_tools:
+    with st.expander(
+        "Optional: full run list, current data, and edit tools",
+        expanded=False
+    ):
         st.subheader("Full randomized run list")
 
         if len(run_schedule) == 0:
