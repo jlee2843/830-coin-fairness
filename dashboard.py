@@ -184,6 +184,7 @@ st.write("Submit coin flip results and view the shared experiment results. One r
 
 FLIPS_PER_TRIAL = 10
 RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
+GITHUB_CACHE_TTL_SECONDS = 60
 
 HELD_CONSTANTS = [
     "Sitting height / chair height",
@@ -287,11 +288,9 @@ def load_run_schedule():
     return schedule.sort_values("run_id").reset_index(drop=True)
 
 
-def next_run_id_from_data(df, schedule):
+def next_run_id_from_valid_data(valid_df, schedule):
     if len(schedule) == 0:
         return None
-
-    valid_df = valid_submitted_data(df, schedule)
 
     if len(valid_df) == 0:
         return int(schedule["run_id"].min())
@@ -302,6 +301,10 @@ def next_run_id_from_data(df, schedule):
         return None
 
     return next_run_id
+
+
+def next_run_id_from_data(df, schedule):
+    return next_run_id_from_valid_data(valid_submitted_data(df, schedule), schedule)
 
 
 def scheduled_run(schedule, run_id):
@@ -316,17 +319,20 @@ def scheduled_run(schedule, run_id):
     return matches.iloc[0]
 
 
-def schedule_progress(schedule, df):
+def schedule_progress_from_valid_data(schedule, valid_df):
     if len(schedule) == 0:
         return schedule.copy()
 
-    valid_df = valid_submitted_data(df, schedule)
     completed_ids = set(valid_df["trial_id"].astype(int)) if len(valid_df) > 0 else set()
     progress = schedule.copy()
     progress["complete"] = progress["run_id"].isin(completed_ids)
     progress["status"] = np.where(progress["complete"], "Complete", "Incomplete")
 
     return progress
+
+
+def schedule_progress(schedule, df):
+    return schedule_progress_from_valid_data(schedule, valid_submitted_data(df, schedule))
 
 
 def mapped_valid_submitted_data(df, schedule):
@@ -903,7 +909,7 @@ def gh_url():
     return gh_url_for(github_path)
 
 
-def load_from_github():
+def _load_from_github_uncached():
     missing = missing_settings()
     if missing:
         raise RuntimeError(f"Missing Streamlit secrets: {missing}")
@@ -936,6 +942,11 @@ def load_from_github():
     return clean_data(pd.read_csv(StringIO(csv_text))), sha
 
 
+@st.cache_data(ttl=GITHUB_CACHE_TTL_SECONDS, show_spinner=False)
+def load_from_github():
+    return _load_from_github_uncached()
+
+
 def save_to_github(df, sha):
     df = clean_data(df)
 
@@ -961,10 +972,12 @@ def save_to_github(df, sha):
     if r.status_code not in [200, 201]:
         raise RuntimeError(f"GitHub save failed: {r.text}")
 
+    load_from_github.clear()
+
     return r.json()
 
 
-def load_calendar_from_github():
+def _load_calendar_from_github_uncached():
     missing = missing_settings()
     if missing:
         raise RuntimeError(f"Missing Streamlit secrets: {missing}")
@@ -997,6 +1010,11 @@ def load_calendar_from_github():
     return clean_calendar_data(pd.read_csv(StringIO(csv_text))), sha
 
 
+@st.cache_data(ttl=GITHUB_CACHE_TTL_SECONDS, show_spinner=False)
+def load_calendar_from_github():
+    return _load_calendar_from_github_uncached()
+
+
 def save_calendar_to_github(df, sha):
     df = clean_calendar_data(df)
     csv_text = df.to_csv(index=False)
@@ -1021,11 +1039,13 @@ def save_calendar_to_github(df, sha):
     if r.status_code not in [200, 201]:
         raise RuntimeError(f"GitHub calendar save failed: {r.text}")
 
+    load_calendar_from_github.clear()
+
     return r.json()
 
 
 def add_calendar_event_to_github(event_date, event_time, event_type, event_title):
-    old_df, sha = load_calendar_from_github()
+    old_df, sha = _load_calendar_from_github_uncached()
     new_df = pd.concat(
         [
             old_df,
@@ -1044,7 +1064,7 @@ def add_calendar_event_to_github(event_date, event_time, event_type, event_title
 
 
 def delete_calendar_event_from_github(event_date, event_time, event_type, event_title):
-    old_df, sha = load_calendar_from_github()
+    old_df, sha = _load_calendar_from_github_uncached()
     event_date_text = event_date.isoformat()
     event_time_text = event_time.strip()
     event_type_text = event_type.strip()
@@ -1067,7 +1087,7 @@ def delete_calendar_event_from_github(event_date, event_time, event_type, event_
 
 
 def clear_calendar_date_from_github(event_date):
-    old_df, sha = load_calendar_from_github()
+    old_df, sha = _load_calendar_from_github_uncached()
     event_date_text = event_date.isoformat()
     new_df = old_df[old_df["date"] != event_date_text].copy()
 
@@ -1080,7 +1100,7 @@ def clear_calendar_date_from_github(event_date):
 
 
 def add_row_to_github(new_row, schedule=None):
-    old_df, sha = load_from_github()
+    old_df, sha = _load_from_github_uncached()
 
     if schedule is not None:
         old_df = valid_submitted_data(old_df, schedule)
@@ -1129,8 +1149,8 @@ def make_submission_row(run, heads):
 def save_submission(new_row, schedule):
     refreshed_df = add_row_to_github(new_row, schedule)
     refreshed_valid_df = valid_submitted_data(refreshed_df, schedule)
-    refreshed_progress = schedule_progress(schedule, refreshed_valid_df)
-    refreshed_next_run_id = next_run_id_from_data(refreshed_valid_df, schedule)
+    refreshed_progress = schedule_progress_from_valid_data(schedule, refreshed_valid_df)
+    refreshed_next_run_id = next_run_id_from_valid_data(refreshed_valid_df, schedule)
     refreshed_next_run = scheduled_run(schedule, refreshed_next_run_id)
 
     return (
@@ -1143,7 +1163,7 @@ def save_submission(new_row, schedule):
 
 
 def delete_trial_from_github(trial_id):
-    old_df, sha = load_from_github()
+    old_df, sha = _load_from_github_uncached()
 
     old_count = len(old_df)
     new_df = old_df[old_df["trial_id"] != trial_id].copy()
@@ -1158,7 +1178,7 @@ def delete_trial_from_github(trial_id):
 
 
 def delete_valid_trial_from_github(trial_id, schedule):
-    old_df, sha = load_from_github()
+    old_df, sha = _load_from_github_uncached()
     mapped_df = mapped_valid_submitted_data(old_df, schedule)
 
     matches = mapped_df[mapped_df["trial_id"].astype(int) == int(trial_id)]
@@ -1186,7 +1206,7 @@ def delete_valid_trial_from_github(trial_id, schedule):
 
 
 def delete_all_rows_from_github():
-    old_df, sha = load_from_github()
+    old_df, sha = _load_from_github_uncached()
 
     new_df = empty_data()
     save_to_github(new_df, sha)
@@ -1206,6 +1226,8 @@ data_mode = st.sidebar.radio(
 st.sidebar.write(f"Each run has **{FLIPS_PER_TRIAL} flips**.")
 
 if st.sidebar.button("Reload data"):
+    load_from_github.clear()
+    load_calendar_from_github.clear()
     st.rerun()
 
 
@@ -1229,9 +1251,9 @@ if fresh_saved_csv:
 
 run_schedule = load_run_schedule()
 valid_df = valid_submitted_data(df, run_schedule)
-next_run_id = next_run_id_from_data(valid_df, run_schedule)
+next_run_id = next_run_id_from_valid_data(valid_df, run_schedule)
 next_run = scheduled_run(run_schedule, next_run_id)
-run_progress = schedule_progress(run_schedule, valid_df)
+run_progress = schedule_progress_from_valid_data(run_schedule, valid_df)
 
 if data_mode == "Dummy data":
     results_df = make_dummy_data()
@@ -1502,26 +1524,20 @@ with submit_tab:
             "proportion_heads",
         ]
 
-        def highlight_completed_run(row):
-            if row["status"] == "Complete":
-                return ["background-color: rgba(46, 160, 67, 0.22)"] * len(row)
-            return [""] * len(row)
-
-        styled_progress = (
-            progress_display[display_cols]
-            .style
-            .format(
-                {
-                    "submitted_heads": "{:.0f}",
-                    "proportion_heads": "{:.1f}",
-                },
-                na_rep="None"
-            )
-            .apply(highlight_completed_run, axis=1)
+        progress_display_for_table = progress_display[display_cols].copy()
+        progress_display_for_table["submitted_heads"] = progress_display_for_table[
+            "submitted_heads"
+        ].map(
+            lambda x: "None" if pd.isna(x) else str(int(x))
+        )
+        progress_display_for_table["proportion_heads"] = progress_display_for_table[
+            "proportion_heads"
+        ].map(
+            lambda x: "None" if pd.isna(x) else f"{x:.1f}"
         )
 
         st.dataframe(
-            styled_progress,
+            progress_display_for_table,
             use_container_width=True,
             hide_index=True
         )
@@ -1825,105 +1841,143 @@ with results_tab:
 
     with code_tab:
         analysis_data_csv = results_df[cols].to_csv(index=False)
+        analysis_result_key = "r_analysis_result"
+        analysis_data_key = "r_analysis_data_csv"
+        run_analysis = st.button(
+            "Run/update R summaries and model",
+            use_container_width=True
+        )
 
-        with st.spinner("Running R summaries and model..."):
-            analysis_output, analysis_messages, analysis_error = render_r_analysis(
-                analysis_data_csv
-            )
+        if run_analysis:
+            with st.spinner("Running R summaries and model..."):
+                st.session_state[analysis_result_key] = render_r_analysis(
+                    analysis_data_csv
+                )
+                st.session_state[analysis_data_key] = analysis_data_csv
 
-        if analysis_error:
-            st.warning(
-                "R could not run on this deployment, so the summaries below are computed in Python."
-            )
-            if analysis_output:
-                st.code(analysis_output, language="text")
-            st.caption(analysis_error)
+        has_current_analysis = (
+            st.session_state.get(analysis_data_key) == analysis_data_csv
+            and analysis_result_key in st.session_state
+        )
 
-            st.write("Treatment summary")
-            st.dataframe(
-                treatment_summary_table(results_df),
-                use_container_width=True,
-                hide_index=True
-            )
-
-            st.write("Nuisance-factor summary")
-            st.dataframe(
-                nuisance_summary_table(results_df),
-                use_container_width=True,
-                hide_index=True
-            )
-
-            st.info("The R ANOVA/model output will appear when Rscript is available.")
+        if not has_current_analysis:
+            st.info("Run the R summary/model when you want to refresh the analysis output.")
         else:
-            st.code(analysis_output or "R completed without printed output.", language="text")
+            analysis_output, analysis_messages, analysis_error = st.session_state[
+                analysis_result_key
+            ]
 
-        if analysis_messages:
-            with st.expander("Show R messages"):
-                st.code(analysis_messages, language="text")
+            if analysis_error:
+                st.warning(
+                    "R could not run on this deployment, so the summaries below are computed in Python."
+                )
+                if analysis_output:
+                    st.code(analysis_output, language="text")
+                st.caption(analysis_error)
+
+                st.write("Treatment summary")
+                st.dataframe(
+                    treatment_summary_table(results_df),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.write("Nuisance-factor summary")
+                st.dataframe(
+                    nuisance_summary_table(results_df),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.info("The R ANOVA/model output will appear when Rscript is available.")
+            else:
+                st.code(analysis_output or "R completed without printed output.", language="text")
+
+            if analysis_messages:
+                with st.expander("Show R messages"):
+                    st.code(analysis_messages, language="text")
 
         with st.expander("Show R summary/model code"):
             st.code(analysis_code, language="r")
 
     with plot_tab:
         plot_data_csv = results_df[cols].to_csv(index=False)
+        plot_result_key = "r_plot_result"
+        plot_data_key = "r_plot_data_csv"
+        run_plots = st.button(
+            "Run/update R ggplot images",
+            use_container_width=True
+        )
 
-        with st.spinner("Rendering ggplot images with R..."):
-            plots, plot_error = render_r_ggplots(plot_data_csv)
+        if run_plots:
+            with st.spinner("Rendering ggplot images with R..."):
+                st.session_state[plot_result_key] = render_r_ggplots(plot_data_csv)
+                st.session_state[plot_data_key] = plot_data_csv
 
-        if plots:
-            plot_titles = {
-                "01-treatment-means": "Mean proportion of heads by treatment",
-                "02-treatment-observed": "Observed proportions by treatment",
-                "03-decade-nuisance": "Nuisance-factor check by decade",
-                "04-flipper-nuisance": "Nuisance-factor check by flipper",
-                "05-qq-residuals": "Normal Q-Q plot of model residuals",
-                "06-residuals-fitted": "Residuals versus fitted values",
-            }
+        has_current_plots = (
+            st.session_state.get(plot_data_key) == plot_data_csv
+            and plot_result_key in st.session_state
+        )
 
-            for plot_name, plot_bytes in plots:
-                st.image(
-                    plot_bytes,
-                    caption=plot_titles.get(plot_name, plot_name),
+        if not has_current_plots:
+            st.info("Run the R ggplot renderer when you want to refresh the plot images.")
+        else:
+            plots, plot_error = st.session_state[plot_result_key]
+
+            if plots:
+                plot_titles = {
+                    "01-treatment-means": "Mean proportion of heads by treatment",
+                    "02-treatment-observed": "Observed proportions by treatment",
+                    "03-decade-nuisance": "Nuisance-factor check by decade",
+                    "04-flipper-nuisance": "Nuisance-factor check by flipper",
+                    "05-qq-residuals": "Normal Q-Q plot of model residuals",
+                    "06-residuals-fitted": "Residuals versus fitted values",
+                }
+
+                for plot_name, plot_bytes in plots:
+                    st.image(
+                        plot_bytes,
+                        caption=plot_titles.get(plot_name, plot_name),
+                        use_container_width=True
+                    )
+
+                if len(plots) < 6:
+                    st.info(
+                        "Diagnostic plots will appear once there is enough data to fit the full model."
+                    )
+            else:
+                st.warning(
+                    "R could not render ggplot images on this deployment, so these preview charts are computed in Python."
+                )
+                st.caption(plot_error)
+
+                treatment_chart = treatment_summary_table(results_df).copy()
+                treatment_chart["treatment"] = (
+                    treatment_chart["denomination"].astype(str)
+                    + " / "
+                    + treatment_chart["posture"].astype(str)
+                )
+
+                st.write("Mean proportion of heads by treatment")
+                st.bar_chart(
+                    treatment_chart.set_index("treatment")["mean_proportion"],
                     use_container_width=True
                 )
 
-            if len(plots) < 6:
-                st.info(
-                    "Diagnostic plots will appear once there is enough data to fit the full model."
+                nuisance_chart = nuisance_summary_table(results_df).copy()
+                nuisance_chart["nuisance_group"] = (
+                    nuisance_chart["decade"].astype(str)
+                    + " / "
+                    + nuisance_chart["flipper"].astype(str)
+                    + " / "
+                    + nuisance_chart["starting_side"].astype(str)
                 )
-        else:
-            st.warning(
-                "R could not render ggplot images on this deployment, so these preview charts are computed in Python."
-            )
-            st.caption(plot_error)
 
-            treatment_chart = treatment_summary_table(results_df).copy()
-            treatment_chart["treatment"] = (
-                treatment_chart["denomination"].astype(str)
-                + " / "
-                + treatment_chart["posture"].astype(str)
-            )
-
-            st.write("Mean proportion of heads by treatment")
-            st.bar_chart(
-                treatment_chart.set_index("treatment")["mean_proportion"],
-                use_container_width=True
-            )
-
-            nuisance_chart = nuisance_summary_table(results_df).copy()
-            nuisance_chart["nuisance_group"] = (
-                nuisance_chart["decade"].astype(str)
-                + " / "
-                + nuisance_chart["flipper"].astype(str)
-                + " / "
-                + nuisance_chart["starting_side"].astype(str)
-            )
-
-            st.write("Mean proportion of heads by nuisance-factor group")
-            st.bar_chart(
-                nuisance_chart.set_index("nuisance_group")["mean_proportion"],
-                use_container_width=True
-            )
+                st.write("Mean proportion of heads by nuisance-factor group")
+                st.bar_chart(
+                    nuisance_chart.set_index("nuisance_group")["mean_proportion"],
+                    use_container_width=True
+                )
 
         with st.expander("Show R ggplot code"):
             st.code(plot_code, language="r")
