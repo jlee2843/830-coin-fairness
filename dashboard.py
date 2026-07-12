@@ -184,6 +184,7 @@ st.write("Submit coin flip results and view the shared experiment results. One r
 
 FLIPS_PER_TRIAL = 10
 RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
+# Touch this comment when Streamlit Cloud needs a fresh deploy trigger.
 GITHUB_CACHE_TTL_SECONDS = 60
 DATA_TOOLS_KEY = "show_submit_data_tools"
 
