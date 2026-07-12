@@ -185,6 +185,7 @@ st.write("Submit coin flip results and view the shared experiment results. One r
 FLIPS_PER_TRIAL = 10
 RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
 GITHUB_CACHE_TTL_SECONDS = 60
+DATA_TOOLS_KEY = "show_submit_data_tools"
 
 HELD_CONSTANTS = [
     "Sitting height / chair height",
@@ -909,6 +910,13 @@ def gh_url():
     return gh_url_for(github_path)
 
 
+def rerun_app():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 def _load_from_github_uncached():
     missing = missing_settings()
     if missing:
@@ -1162,6 +1170,27 @@ def save_submission(new_row, schedule):
     )
 
 
+def record_flip(flip_state_key, result):
+    st.session_state[DATA_TOOLS_KEY] = False
+    flip_results = st.session_state.setdefault(flip_state_key, [])
+
+    if len(flip_results) < FLIPS_PER_TRIAL:
+        flip_results.append(result)
+
+
+def undo_flip(flip_state_key):
+    st.session_state[DATA_TOOLS_KEY] = False
+    flip_results = st.session_state.setdefault(flip_state_key, [])
+
+    if flip_results:
+        flip_results.pop()
+
+
+def reset_flips(flip_state_key):
+    st.session_state[DATA_TOOLS_KEY] = False
+    st.session_state[flip_state_key] = []
+
+
 def delete_trial_from_github(trial_id):
     old_df, sha = _load_from_github_uncached()
 
@@ -1228,7 +1257,7 @@ st.sidebar.write(f"Each run has **{FLIPS_PER_TRIAL} flips**.")
 if st.sidebar.button("Reload data"):
     load_from_github.clear()
     load_calendar_from_github.clear()
-    st.rerun()
+    rerun_app()
 
 
 missing = missing_settings()
@@ -1381,38 +1410,38 @@ with submit_tab:
 
         b1, b2, b3, b4 = st.columns([1.25, 1.25, 1, 1])
         with b1:
-            if st.button(
+            st.button(
                 "Heads",
                 disabled=flips_recorded >= FLIPS_PER_TRIAL,
                 use_container_width=True,
-                type="primary"
-            ):
-                st.session_state[flip_state_key].append("Heads")
-                st.rerun()
+                type="primary",
+                on_click=record_flip,
+                args=(flip_state_key, "Heads")
+            )
         with b2:
-            if st.button(
+            st.button(
                 "Tails",
                 disabled=flips_recorded >= FLIPS_PER_TRIAL,
-                use_container_width=True
-            ):
-                st.session_state[flip_state_key].append("Tails")
-                st.rerun()
+                use_container_width=True,
+                on_click=record_flip,
+                args=(flip_state_key, "Tails")
+            )
         with b3:
-            if st.button(
+            st.button(
                 "Undo",
                 disabled=flips_recorded == 0,
-                use_container_width=True
-            ):
-                st.session_state[flip_state_key].pop()
-                st.rerun()
+                use_container_width=True,
+                on_click=undo_flip,
+                args=(flip_state_key,)
+            )
         with b4:
-            if st.button(
+            st.button(
                 "Reset",
                 disabled=flips_recorded == 0,
-                use_container_width=True
-            ):
-                st.session_state[flip_state_key] = []
-                st.rerun()
+                use_container_width=True,
+                on_click=reset_flips,
+                args=(flip_state_key,)
+            )
 
         if flip_results:
             history_html = "".join(
@@ -1446,7 +1475,7 @@ with submit_tab:
                 st.session_state[flip_state_key] = []
                 st.session_state["submission_saved"] = True
                 st.session_state["fresh_saved_data_csv"] = df[cols].to_csv(index=False)
-                st.rerun()
+                rerun_app()
             except Exception as e:
                 st.error("Submission failed.")
                 st.write(str(e))
@@ -1479,145 +1508,163 @@ with submit_tab:
                 st.session_state[flip_state_key] = []
                 st.session_state["submission_saved"] = True
                 st.session_state["fresh_saved_data_csv"] = df[cols].to_csv(index=False)
-                st.rerun()
+                rerun_app()
             except Exception as e:
                 st.error("Submission failed.")
                 st.write(str(e))
 
     st.divider()
 
-    st.subheader("Full randomized run list")
+    show_data_tools = st.checkbox(
+        "Show full run list, current data, and edit tools",
+        value=False,
+        key=DATA_TOOLS_KEY
+    )
 
-    if len(run_schedule) == 0:
-        st.info("No randomized run list is available yet.")
-    else:
-        progress_display = run_progress.copy()
+    if show_data_tools:
+        st.subheader("Full randomized run list")
+
+        if len(run_schedule) == 0:
+            st.info("No randomized run list is available yet.")
+        else:
+            progress_display = run_progress.copy()
+
+            if len(valid_df) > 0:
+                submitted_heads = (
+                    valid_df[["trial_id", "heads"]]
+                    .drop_duplicates(subset=["trial_id"], keep="last")
+                    .rename(columns={"trial_id": "run_id", "heads": "submitted_heads"})
+                )
+                progress_display = progress_display.merge(
+                    submitted_heads,
+                    on="run_id",
+                    how="left"
+                )
+            else:
+                progress_display["submitted_heads"] = np.nan
+
+            progress_display["proportion_heads"] = (
+                progress_display["submitted_heads"] / FLIPS_PER_TRIAL
+            ).round(3)
+
+            display_cols = [
+                "run_id",
+                "status",
+                "replication",
+                "denomination",
+                "decade",
+                "posture",
+                "flipper",
+                "starting_side",
+                "submitted_heads",
+                "proportion_heads",
+            ]
+
+            progress_display_for_table = progress_display[display_cols].copy()
+            progress_display_for_table["submitted_heads"] = progress_display_for_table[
+                "submitted_heads"
+            ].map(
+                lambda x: "None" if pd.isna(x) else str(int(x))
+            )
+            progress_display_for_table["proportion_heads"] = progress_display_for_table[
+                "proportion_heads"
+            ].map(
+                lambda x: "None" if pd.isna(x) else f"{x:.1f}"
+            )
+
+            def color_run_status(row):
+                if row["status"] == "Complete":
+                    return ["background-color: rgba(46, 160, 67, 0.22)"] * len(row)
+
+                return ["background-color: rgba(239, 68, 68, 0.14)"] * len(row)
+
+            styled_progress_display = progress_display_for_table.style.apply(
+                color_run_status,
+                axis=1
+            )
+
+            st.dataframe(
+                styled_progress_display,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.download_button(
+                "Download run list with status",
+                data=progress_display[display_cols].to_csv(index=False).encode("utf-8"),
+                file_name="run_schedule_with_status.csv",
+                mime="text/csv"
+            )
+
+        st.divider()
+
+        st.subheader("Current shared data")
+
+        if len(valid_df) == 0:
+            st.info("No data has been submitted yet.")
+        else:
+            st.dataframe(valid_df, use_container_width=True)
+
+            st.download_button(
+                "Download current CSV",
+                data=valid_df[cols].to_csv(index=False).encode("utf-8"),
+                file_name="coin_experiment_data.csv",
+                mime="text/csv"
+            )
 
         if len(valid_df) > 0:
-            submitted_heads = (
-                valid_df[["trial_id", "heads"]]
-                .drop_duplicates(subset=["trial_id"], keep="last")
-                .rename(columns={"trial_id": "run_id", "heads": "submitted_heads"})
+            st.divider()
+            st.subheader("Delete a row")
+
+            st.warning("Deleting a row updates the GitHub CSV. Use this only for mistakes.")
+
+            delete_id = st.selectbox(
+                "Choose Trial ID to delete",
+                sorted(valid_df["trial_id"].unique())
             )
-            progress_display = progress_display.merge(
-                submitted_heads,
-                on="run_id",
-                how="left"
+
+            confirm_delete = st.checkbox("I confirm that I want to delete this row.")
+
+            if st.button("Delete selected row"):
+                if not confirm_delete:
+                    st.error("Check the confirmation box first.")
+                else:
+                    try:
+                        df = delete_valid_trial_from_github(int(delete_id), run_schedule)
+                        st.success(f"Trial ID {delete_id} was deleted.")
+                        rerun_app()
+                    except Exception as e:
+                        st.error("Delete failed.")
+                        st.write(str(e))
+
+        if len(df) > 0:
+            st.divider()
+            st.subheader("Erase all data")
+
+            st.error("Danger zone: this will erase every row in the shared GitHub CSV.")
+
+            erase_password = st.text_input(
+                "Enter admin password to erase all rows",
+                type="password"
             )
-        else:
-            progress_display["submitted_heads"] = np.nan
 
-        progress_display["proportion_heads"] = (
-            progress_display["submitted_heads"] / FLIPS_PER_TRIAL
-        ).round(3)
+            confirm_erase_all = st.checkbox(
+                "I understand this will permanently erase all submitted rows."
+            )
 
-        display_cols = [
-            "run_id",
-            "status",
-            "replication",
-            "denomination",
-            "decade",
-            "posture",
-            "flipper",
-            "starting_side",
-            "submitted_heads",
-            "proportion_heads",
-        ]
-
-        progress_display_for_table = progress_display[display_cols].copy()
-        progress_display_for_table["submitted_heads"] = progress_display_for_table[
-            "submitted_heads"
-        ].map(
-            lambda x: "None" if pd.isna(x) else str(int(x))
-        )
-        progress_display_for_table["proportion_heads"] = progress_display_for_table[
-            "proportion_heads"
-        ].map(
-            lambda x: "None" if pd.isna(x) else f"{x:.1f}"
-        )
-
-        st.dataframe(
-            progress_display_for_table,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        st.download_button(
-            "Download run list with status",
-            data=progress_display[display_cols].to_csv(index=False).encode("utf-8"),
-            file_name="run_schedule_with_status.csv",
-            mime="text/csv"
-        )
-
-    st.divider()
-
-    st.subheader("Current shared data")
-
-    if len(valid_df) == 0:
-        st.info("No data has been submitted yet.")
-    else:
-        st.dataframe(valid_df, use_container_width=True)
-
-        st.download_button(
-            "Download current CSV",
-            data=valid_df[cols].to_csv(index=False).encode("utf-8"),
-            file_name="coin_experiment_data.csv",
-            mime="text/csv"
-        )
-
-    if len(valid_df) > 0:
-        st.divider()
-        st.subheader("Delete a row")
-
-        st.warning("Deleting a row updates the GitHub CSV. Use this only for mistakes.")
-
-        delete_id = st.selectbox(
-            "Choose Trial ID to delete",
-            sorted(valid_df["trial_id"].unique())
-        )
-
-        confirm_delete = st.checkbox("I confirm that I want to delete this row.")
-
-        if st.button("Delete selected row"):
-            if not confirm_delete:
-                st.error("Check the confirmation box first.")
-            else:
-                try:
-                    df = delete_valid_trial_from_github(int(delete_id), run_schedule)
-                    st.success(f"Trial ID {delete_id} was deleted.")
-                    st.rerun()
-                except Exception as e:
-                    st.error("Delete failed.")
-                    st.write(str(e))
-
-    if len(df) > 0:
-        st.divider()
-        st.subheader("Erase all data")
-
-        st.error("Danger zone: this will erase every row in the shared GitHub CSV.")
-
-        erase_password = st.text_input(
-            "Enter admin password to erase all rows",
-            type="password"
-        )
-
-        confirm_erase_all = st.checkbox(
-            "I understand this will permanently erase all submitted rows."
-        )
-
-        if st.button("Erase all rows"):
-            if not confirm_erase_all:
-                st.error("Check the confirmation box first.")
-            elif erase_password != delete_password:
-                st.error("Incorrect password.")
-            else:
-                try:
-                    df = delete_all_rows_from_github()
-                    st.success("All rows were erased.")
-                    st.rerun()
-                except Exception as e:
-                    st.error("Erase failed.")
-                    st.write(str(e))
+            if st.button("Erase all rows"):
+                if not confirm_erase_all:
+                    st.error("Check the confirmation box first.")
+                elif erase_password != delete_password:
+                    st.error("Incorrect password.")
+                else:
+                    try:
+                        df = delete_all_rows_from_github()
+                        st.success("All rows were erased.")
+                        rerun_app()
+                    except Exception as e:
+                        st.error("Erase failed.")
+                        st.write(str(e))
 
     st.divider()
     st.caption(f"Saving to: `{github_repo}/{github_path}`")
@@ -1696,7 +1743,7 @@ with instructions_tab:
                 event_title
             )
             st.success("Calendar event was saved.")
-            st.rerun()
+            rerun_app()
         except Exception as e:
             st.error("Calendar event could not be saved.")
             st.write(str(e))
@@ -1729,7 +1776,7 @@ with instructions_tab:
                     event_to_delete["title"]
                 )
                 st.success("Calendar event was removed.")
-                st.rerun()
+                rerun_app()
             except Exception as e:
                 st.error("Calendar event could not be removed.")
                 st.write(str(e))
@@ -1745,7 +1792,7 @@ with instructions_tab:
             try:
                 calendar_df = clear_calendar_date_from_github(clear_date)
                 st.success(f"All events on {clear_date.isoformat()} were cleared.")
-                st.rerun()
+                rerun_app()
             except Exception as e:
                 st.error("Date could not be cleared.")
                 st.write(str(e))
