@@ -686,6 +686,17 @@ p_treatment_observed <- ggplot(coin, aes(x = denomination, y = proportion, color
   theme_minimal() +
   theme(legend.position = "none")
 
+p_probability_distribution <- ggplot(coin, aes(x = heads, y = after_stat(count / sum(count)))) +
+  geom_histogram(binwidth = 1, boundary = -0.5, fill = "#4C78A8", color = "white") +
+  scale_x_continuous(breaks = 0:{FLIPS_PER_TRIAL}, limits = c(-0.5, {FLIPS_PER_TRIAL} + 0.5)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Observed probability distribution of heads",
+    x = "Heads out of 10",
+    y = "Observed probability"
+  ) +
+  theme_minimal()
+
 p_decade <- ggplot(coin, aes(x = decade, y = proportion, fill = decade)) +
   geom_boxplot(alpha = 0.55, outlier.shape = NA) +
   geom_jitter(width = 0.12, alpha = 0.65, size = 2) +
@@ -746,6 +757,7 @@ if (!inherits(nuisance_fit, "try-error")) {{
 
 print(p_treatment_mean)
 print(p_treatment_observed)
+print(p_probability_distribution)
 print(p_decade)
 print(p_flipper)
 
@@ -799,15 +811,16 @@ dir.create("{r_escape_path(output_dir)}", showWarnings = FALSE, recursive = TRUE
 
 ggsave(file.path("{r_escape_path(output_dir)}", "01-treatment-means.png"), p_treatment_mean, width = 8, height = 5, dpi = 160)
 ggsave(file.path("{r_escape_path(output_dir)}", "02-treatment-observed.png"), p_treatment_observed, width = 8, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "03-decade-nuisance.png"), p_decade, width = 7, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "04-flipper-nuisance.png"), p_flipper, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "03-probability-distribution.png"), p_probability_distribution, width = 8, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "04-decade-nuisance.png"), p_decade, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "05-flipper-nuisance.png"), p_flipper, width = 7, height = 5, dpi = 160)
 
 if (exists("p_qq")) {{
-  ggsave(file.path("{r_escape_path(output_dir)}", "05-qq-residuals.png"), p_qq, width = 7, height = 5, dpi = 160)
+  ggsave(file.path("{r_escape_path(output_dir)}", "06-qq-residuals.png"), p_qq, width = 7, height = 5, dpi = 160)
 }}
 
 if (exists("p_residuals")) {{
-  ggsave(file.path("{r_escape_path(output_dir)}", "06-residuals-fitted.png"), p_residuals, width = 7, height = 5, dpi = 160)
+  ggsave(file.path("{r_escape_path(output_dir)}", "07-residuals-fitted.png"), p_residuals, width = 7, height = 5, dpi = 160)
 }}
 """
 
@@ -1973,10 +1986,11 @@ with results_tab:
                 plot_titles = {
                     "01-treatment-means": "Mean proportion of heads by treatment",
                     "02-treatment-observed": "Observed proportions by treatment",
-                    "03-decade-nuisance": "Nuisance-factor check by decade",
-                    "04-flipper-nuisance": "Nuisance-factor check by flipper",
-                    "05-qq-residuals": "Normal Q-Q plot of model residuals",
-                    "06-residuals-fitted": "Residuals versus fitted values",
+                    "03-probability-distribution": "Observed probability distribution of heads",
+                    "04-decade-nuisance": "Nuisance-factor check by decade",
+                    "05-flipper-nuisance": "Nuisance-factor check by flipper",
+                    "06-qq-residuals": "Normal Q-Q plot of model residuals",
+                    "07-residuals-fitted": "Residuals versus fitted values",
                 }
 
                 for plot_name, plot_bytes in plots:
@@ -1986,7 +2000,7 @@ with results_tab:
                         use_container_width=True
                     )
 
-                if len(plots) < 6:
+                if len(plots) < 7:
                     st.info(
                         "Diagnostic plots will appear once there is enough data to fit the full model."
                     )
@@ -2006,6 +2020,19 @@ with results_tab:
                 st.write("Mean proportion of heads by treatment")
                 st.bar_chart(
                     treatment_chart.set_index("treatment")["mean_proportion"],
+                    use_container_width=True
+                )
+
+                probability_chart = (
+                    results_df["heads"]
+                    .value_counts(normalize=True)
+                    .reindex(range(FLIPS_PER_TRIAL + 1), fill_value=0)
+                    .sort_index()
+                )
+
+                st.write("Observed probability distribution of heads")
+                st.bar_chart(
+                    probability_chart,
                     use_container_width=True
                 )
 
