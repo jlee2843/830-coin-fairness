@@ -19,6 +19,4 @@ Restrictions
 - Must flip on thumb and use the index finger as leverage
 - Coin must land on the floor properly. If it does not land on the floor and lands on a body instead, we must re-run it
 
-
-
 Make a randomized list of flipper, recorder, and picker. 

@@ -233,6 +233,7 @@ github_token = st.secrets.get("GITHUB_TOKEN", "")
 github_repo = st.secrets.get("GITHUB_REPO", "")
 github_path = st.secrets.get("GITHUB_PATH", "data/coin_experiment_data.csv")
 calendar_github_path = st.secrets.get("CALENDAR_GITHUB_PATH", "data/calendar_events.csv")
+notes_github_path = st.secrets.get("NOTES_GITHUB_PATH", "data/experiment_notes.csv")
 github_branch = st.secrets.get("GITHUB_BRANCH", "main")
 delete_password = st.secrets.get("DELETE_PASSWORD", "")
 
@@ -243,6 +244,10 @@ def empty_data():
 
 def empty_calendar_data():
     return pd.DataFrame(columns=["date", "time", "type", "title"])
+
+
+def empty_notes_data():
+    return pd.DataFrame(columns=["note_id", "created_at", "author", "type", "note"])
 
 
 def clean_calendar_data(df):
@@ -263,6 +268,31 @@ def clean_calendar_data(df):
     df["date"] = df["date"].astype(str)
 
     return df.sort_values(["date", "time", "type", "title"]).reset_index(drop=True)
+
+
+def clean_notes_data(df):
+    df = df.copy()
+
+    for c in ["note_id", "created_at", "author", "type", "note"]:
+        if c not in df.columns:
+            df[c] = ""
+
+    df = df[["note_id", "created_at", "author", "type", "note"]].copy()
+
+    for c in ["note_id", "created_at", "author", "type", "note"]:
+        df[c] = df[c].astype(str).str.strip().replace({"nan": ""})
+
+    df.loc[df["type"] == "", "type"] = "Note"
+    df.loc[~df["type"].isin(["Note", "Comment", "Question", "Issue"]), "type"] = "Note"
+    df = df[df["note"] != ""].reset_index(drop=True)
+
+    if len(df) > 0:
+        missing_note_id = df["note_id"] == ""
+        df.loc[missing_note_id, "note_id"] = [
+            f"note-{i + 1}" for i in range(int(missing_note_id.sum()))
+        ]
+
+    return df.sort_values("created_at", ascending=False).reset_index(drop=True)
 
 
 def load_run_schedule():
@@ -1037,6 +1067,44 @@ def load_calendar_from_github():
     return _load_calendar_from_github_uncached()
 
 
+def _load_notes_from_github_uncached():
+    missing = missing_settings()
+    if missing:
+        raise RuntimeError(f"Missing Streamlit secrets: {missing}")
+
+    r = requests.get(
+        gh_url_for(notes_github_path),
+        headers=gh_headers(),
+        params={"ref": github_branch},
+        timeout=20
+    )
+
+    if r.status_code == 404:
+        return empty_notes_data(), None
+
+    if r.status_code != 200:
+        raise RuntimeError(f"GitHub notes load failed: {r.text}")
+
+    payload = r.json()
+    sha = payload.get("sha")
+    content = payload.get("content", "")
+
+    if content.strip() == "":
+        return empty_notes_data(), sha
+
+    csv_text = base64.b64decode(content).decode("utf-8")
+
+    if csv_text.strip() == "":
+        return empty_notes_data(), sha
+
+    return clean_notes_data(pd.read_csv(StringIO(csv_text))), sha
+
+
+@st.cache_data(ttl=GITHUB_CACHE_TTL_SECONDS, show_spinner=False)
+def load_notes_from_github():
+    return _load_notes_from_github_uncached()
+
+
 def save_calendar_to_github(df, sha):
     df = clean_calendar_data(df)
     csv_text = df.to_csv(index=False)
@@ -1066,6 +1134,35 @@ def save_calendar_to_github(df, sha):
     return r.json()
 
 
+def save_notes_to_github(df, sha):
+    df = clean_notes_data(df)
+    csv_text = df.to_csv(index=False)
+    encoded = base64.b64encode(csv_text.encode("utf-8")).decode("utf-8")
+
+    data = {
+        "message": f"Update experiment notes {datetime.now().isoformat(timespec='seconds')}",
+        "content": encoded,
+        "branch": github_branch
+    }
+
+    if sha is not None:
+        data["sha"] = sha
+
+    r = requests.put(
+        gh_url_for(notes_github_path),
+        headers=gh_headers(),
+        json=data,
+        timeout=20
+    )
+
+    if r.status_code not in [200, 201]:
+        raise RuntimeError(f"GitHub notes save failed: {r.text}")
+
+    load_notes_from_github.clear()
+
+    return r.json()
+
+
 def add_calendar_event_to_github(event_date, event_time, event_type, event_title):
     old_df, sha = _load_calendar_from_github_uncached()
     new_df = pd.concat(
@@ -1082,6 +1179,41 @@ def add_calendar_event_to_github(event_date, event_time, event_type, event_title
     )
     save_calendar_to_github(new_df, sha)
     refreshed, _ = load_calendar_from_github()
+    return refreshed
+
+
+def add_experiment_note_to_github(author, note_type, note_text):
+    old_df, sha = _load_notes_from_github_uncached()
+    created_at = datetime.now().isoformat(timespec="seconds")
+    note_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    new_df = pd.concat(
+        [
+            old_df,
+            pd.DataFrame([{
+                "note_id": note_id,
+                "created_at": created_at,
+                "author": author.strip() or "Anonymous",
+                "type": note_type,
+                "note": note_text.strip()
+            }])
+        ],
+        ignore_index=True
+    )
+    save_notes_to_github(new_df, sha)
+    refreshed, _ = load_notes_from_github()
+    return refreshed
+
+
+def delete_experiment_note_from_github(note_id):
+    old_df, sha = _load_notes_from_github_uncached()
+    matches = old_df[old_df["note_id"].astype(str) == str(note_id)]
+
+    if len(matches) == 0:
+        raise RuntimeError("Note was not found.")
+
+    new_df = old_df.drop(index=matches.index[0]).reset_index(drop=True)
+    save_notes_to_github(new_df, sha)
+    refreshed, _ = load_notes_from_github()
     return refreshed
 
 
@@ -1271,6 +1403,7 @@ st.sidebar.write(f"Each run has **{FLIPS_PER_TRIAL} flips**.")
 if st.sidebar.button("Reload data"):
     load_from_github.clear()
     load_calendar_from_github.clear()
+    load_notes_from_github.clear()
     rerun_app()
 
 
@@ -1704,6 +1837,83 @@ with instructions_tab:
     st.markdown("### Restrictions")
     for item in RESTRICTIONS:
         st.markdown(f"- {item}")
+
+    st.divider()
+
+    st.markdown("### Comments and notes")
+
+    try:
+        notes_df, _ = load_notes_from_github()
+    except Exception as e:
+        notes_df = empty_notes_data()
+        st.error("Could not load experiment notes from GitHub.")
+        st.write(str(e))
+
+    st.caption(f"Notes are saved to: `{github_repo}/{notes_github_path}`")
+
+    with st.form("experiment_note_form", clear_on_submit=True):
+        note_author_col, note_type_col = st.columns([2, 1])
+
+        with note_author_col:
+            note_author = st.text_input("Name")
+
+        with note_type_col:
+            note_type = st.selectbox("Type", ["Note", "Comment", "Question", "Issue"])
+
+        note_text = st.text_area("Comment or note")
+        add_note = st.form_submit_button("Add note", use_container_width=True)
+
+    if add_note:
+        if not note_text.strip():
+            st.error("Write a comment or note first.")
+        else:
+            try:
+                notes_df = add_experiment_note_to_github(
+                    note_author,
+                    note_type,
+                    note_text
+                )
+                st.success("Note was saved.")
+                rerun_app()
+            except Exception as e:
+                st.error("Note could not be saved.")
+                st.write(str(e))
+
+    if len(notes_df) == 0:
+        st.info("No comments or notes yet.")
+    else:
+        st.dataframe(
+            notes_df[["created_at", "author", "type", "note"]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        with st.expander("Delete a note"):
+            note_label_by_id = {
+                row["note_id"]: (
+                    f'{row["created_at"]} [{row["type"]}] '
+                    f'{row["author"]}: {row["note"][:80]}'
+                )
+                for _, row in notes_df.iterrows()
+            }
+            note_to_delete = st.selectbox(
+                "Choose note to delete",
+                list(note_label_by_id.keys()),
+                format_func=lambda note_id: note_label_by_id[note_id]
+            )
+            confirm_note_delete = st.checkbox("I confirm that I want to delete this note.")
+
+            if st.button("Delete selected note"):
+                if not confirm_note_delete:
+                    st.error("Check the confirmation box first.")
+                else:
+                    try:
+                        notes_df = delete_experiment_note_from_github(note_to_delete)
+                        st.success("Note was deleted.")
+                        rerun_app()
+                    except Exception as e:
+                        st.error("Note could not be deleted.")
+                        st.write(str(e))
 
     st.divider()
     st.markdown("### July 2026")
