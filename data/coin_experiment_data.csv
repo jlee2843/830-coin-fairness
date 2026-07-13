@@ -140,3 +140,4 @@ trial_id,denomination,decade,posture,flipper,starting_side,heads
 139,Dime,2010s,Standing,Esther,Tails,7
 140,Quarter,2010s,Standing,Josh,Heads,7
 141,Nickel,1980s,Sitting,Josh,Tails,5
+142,Nickel,2010s,Standing,Esther,Tails,3
