@@ -1,2 +1,11 @@
 note_id,created_at,author,type,note
+20260713201859961229,2026-07-13T20:18:59,Jenny,Question,"Questions to ask Diana:
+1. What do we do with our residual plots?
+2. List of ANOVA tests to perform, get it confirmed by Diana: 
+- Current ANOVA (With all the design factors, blocking factors, interaction between design factors.)
+- Full ANOVA (With all the design factors, blocking factors, interaction between main effects and blocking factors, and all the possible interactions.)
+- Tukey HSD based on  what turns out to be significant from ANOVA tables. 
+3. Things for Jenny to add:
+- Interaction plots 
+4. What other analysis can we do?"
 20260713195958960507,2026-07-13T19:59:58,Jenny,Note,Let's keep notes :)
