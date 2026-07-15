@@ -567,14 +567,11 @@ def render_calendar_html(year, month, events):
     return "".join(parts)
 
 
-def r_data_path():
-    return github_path if github_path else "data/coin_experiment_data.csv"
-
-
 def r_analysis_code(csv_path):
     return f"""library(tidyverse)
 library(car)
 library(broom)
+library(emmeans)
 
 coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
   mutate(
@@ -587,12 +584,11 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     posture = factor(posture),
     decade = factor(decade),
     flipper = factor(flipper),
-    starting_side = factor(starting_side),
-    treatment = interaction(denomination, posture, sep = " / ")
+    starting_side = factor(starting_side)
   )
 
-treatment_summary <- coin |>
-  group_by(denomination, posture) |>
+design_summary <- coin |>
+  group_by(denomination, posture, starting_side) |>
   summarise(
     runs = n(),
     total_heads = sum(heads),
@@ -602,8 +598,8 @@ treatment_summary <- coin |>
     .groups = "drop"
   )
 
-nuisance_summary <- coin |>
-  group_by(decade, flipper, starting_side) |>
+block_summary <- coin |>
+  group_by(decade, flipper) |>
   summarise(
     runs = n(),
     total_heads = sum(heads),
@@ -613,45 +609,240 @@ nuisance_summary <- coin |>
     .groups = "drop"
   )
 
-cat("Treatment summary\\n")
-print(treatment_summary)
-cat("\\nNuisance-factor summary\\n")
-print(nuisance_summary)
+cat("Design-factor summary\\n")
+print(design_summary)
+cat("\\nBlock-factor summary\\n")
+print(block_summary)
 
-nuisance_fit <- try(
+alpha <- 0.05
+options(contrasts = c("contr.sum", "contr.poly"))
+
+full_formula <- proportion ~
+  denomination + posture + starting_side + decade + flipper +
+  denomination:posture +
+  denomination:starting_side +
+  denomination:decade +
+  denomination:flipper +
+  posture:starting_side +
+  posture:decade +
+  posture:flipper +
+  starting_side:decade +
+  starting_side:flipper +
+  decade:flipper +
+  denomination:posture:starting_side +
+  denomination:posture:decade +
+  denomination:posture:flipper +
+  denomination:starting_side:decade +
+  denomination:starting_side:flipper +
+  denomination:decade:flipper +
+  posture:starting_side:decade +
+  posture:starting_side:flipper +
+  posture:decade:flipper +
+  starting_side:decade:flipper
+
+full_fit <- try(
   lm(
-    proportion ~ denomination * posture + decade + flipper + starting_side,
+    full_formula,
     data = coin
   ),
   silent = TRUE
 )
 
-if (inherits(nuisance_fit, "try-error")) {{
+if (inherits(full_fit, "try-error")) {{
   cat("\\nModel output unavailable with the current data.\\n")
 }} else {{
-  cat("\\nType II ANOVA\\n")
-  nuisance_anova <- try(Anova(nuisance_fit, type = 2), silent = TRUE)
+  cat("\\nStep 1. Full model with interactions up to order three\\n")
+  cat("Design factors: denomination, posture, and starting_side\\n")
+  cat("Blocking factors: decade and flipper\\n")
+  cat("Replication supplies repeated observations and is not a model term.\\n")
+  cat("Four-way and five-way interactions are excluded.\\n")
+  cat("Significance level:", alpha, "\\n")
+  cat("Model rank:", full_fit$rank, "of", ncol(model.matrix(full_fit)), "columns\\n")
+  cat("This confirms that all coefficients are independent and no terms are aliased..")
 
-  if (inherits(nuisance_anova, "try-error")) {{
+
+  full_anova <- try(Anova(full_fit, type = 3), silent = TRUE)
+
+  if (inherits(full_anova, "try-error")) {{
     cat("ANOVA unavailable with the current data.\\n")
   }} else {{
-    print(nuisance_anova)
-  }}
+    cat("\\nType III ANOVA for the full model\\n")
+    print(full_anova)
 
-  cat("\\nBinomial model summary\\n")
-  binomial_fit <- try(
-    glm(
-      cbind(heads, tails) ~ denomination * posture + decade + flipper + starting_side,
-      family = binomial,
-      data = coin
-    ),
-    silent = TRUE
-  )
+    anova_table <- as.data.frame(full_anova)
+    anova_table$term <- rownames(anova_table)
+    p_column <- grep("^Pr\\\\(", names(anova_table), value = TRUE)[1]
 
-  if (inherits(binomial_fit, "try-error")) {{
-    cat("Binomial model unavailable with the current data.\\n")
-  }} else {{
-    print(summary(binomial_fit))
+    significant_terms <- anova_table |>
+      filter(
+        !term %in% c("(Intercept)", "Residuals"),
+        !is.na(.data[[p_column]]),
+        .data[[p_column]] < alpha
+      ) |>
+      pull(term)
+
+    main_terms <- c("denomination", "posture", "starting_side", "decade", "flipper")
+    full_terms <- attr(terms(full_fit), "term.labels")
+    term_order <- function(term) {{length(strsplit(term, ":", fixed = TRUE)[[1]])}}
+    two_way_terms <- full_terms[vapply(full_terms, term_order, integer(1)) == 2]
+    three_way_terms <- full_terms[vapply(full_terms, term_order, integer(1)) == 3]
+    interaction_terms <- c(two_way_terms, three_way_terms)
+    significant_interactions <- intersect(
+      interaction_terms,
+      significant_terms
+    )
+    significant_three_way <- intersect(three_way_terms, significant_terms)
+    required_two_way <- unique(unlist(lapply(
+      significant_three_way,
+      function(term) {{
+        variables <- strsplit(term, ":", fixed = TRUE)[[1]]
+        combn(
+          variables,
+          2,
+          FUN = function(parts) paste(parts, collapse = ":")
+        )
+      }}
+    )))
+    retained_interactions <- unique(c(significant_interactions, required_two_way))
+    dropped_interactions <- setdiff(interaction_terms,retained_interactions)
+    reduced_terms <- c(main_terms, retained_interactions)
+    reduced_fit <- lm(reformulate(reduced_terms, response = "proportion"),data = coin)
+
+    cat("\\nReduced model: remove nonsignificant interactions together\\n")
+    cat("All main effects are retained to preserve hierarchy.\\n")
+    cat("Interactions retained because they are significant or required by hierarchy\\n")
+
+    if (length(retained_interactions) == 0) {{
+      cat("None.\\n")
+    }} else {{
+      print(retained_interactions)
+    }}
+
+    cat("Interactions removed together\\n")
+
+    if (length(dropped_interactions) == 0) {{
+      cat("None.\\n")
+      selected_fit <- full_fit
+    }} else {{
+      print(dropped_interactions)
+      cat("\\nType III ANOVA after removing nonsignificant interactions\\n")
+      reduced_anova <- Anova(reduced_fit, type = 3)
+      print(reduced_anova)
+      cat("\\nPartial F-test: reduced model versus full model\\n")
+      cat("This is an extra-sum-of-squares ANOVA for two nested models.\\n")
+      cat("It compares the mean variation explained by the removed interactions with the full model's residual mean variation.\\n")
+      cat("H0: all removed interaction coefficients are jointly zero.\\n")
+      cat("H1: at least one removed interaction coefficient is not zero.\\n")
+      reduction_comparison <- anova(reduced_fit, full_fit)
+      print(reduction_comparison)
+      reduction_p <- reduction_comparison[["Pr(>F)"]][2]
+
+      if (!is.na(reduction_p) && reduction_p < alpha) {{
+        selected_fit <- full_fit
+        cat("Removing the interactions was significant, so the full model is retained.\\n")
+      }} else {{
+        selected_fit <- reduced_fit
+        cat("Removing the interactions was not significant, so the reduced model is selected.\\n")
+        cat("The important significant terms may stay the same; reduction removes unsupported complexity rather than trying to create new significance.\\n")
+      }}
+    }}
+
+    cat("\\nSelected model formula\\n")
+    print(formula(selected_fit))
+    cat("\\nType III ANOVA for the selected model\\n")
+    selected_anova <- Anova(selected_fit, type = 3)
+    print(selected_anova)
+
+    selected_table <- as.data.frame(selected_anova)
+    selected_table$term <- rownames(selected_table)
+    selected_p_column <- grep("^Pr\\\\(", names(selected_table), value = TRUE)[1]
+    selected_significant_terms <- selected_table |>
+      filter(
+        !term %in% c("(Intercept)", "Residuals"),
+        !is.na(.data[[selected_p_column]]),
+        .data[[selected_p_column]] < alpha
+      ) |>
+      pull(term)
+
+    cat("\\nSignificant terms in the selected model at alpha = 0.05\\n")
+
+    if (length(selected_significant_terms) == 0) {{
+      cat("None.\\n")
+    }} else {{
+      print(selected_significant_terms)
+    }}
+
+    design_grid <- expand_grid(
+      denomination = levels(coin$denomination),
+      posture = levels(coin$posture),
+      starting_side = levels(coin$starting_side)
+    )
+
+    predict_average_condition <- function(fit, condition) {{
+      averaging_grid <- expand_grid(
+        decade = levels(coin$decade),
+        flipper = levels(coin$flipper)
+      )
+
+      new_data <- crossing(condition, averaging_grid) |>
+        mutate(
+          denomination = factor(denomination, levels = levels(coin$denomination)),
+          posture = factor(posture, levels = levels(coin$posture)),
+          starting_side = factor(starting_side, levels = levels(coin$starting_side)),
+          decade = factor(decade, levels = levels(coin$decade)),
+          flipper = factor(flipper, levels = levels(coin$flipper))
+        )
+
+      design_matrix <- model.matrix(
+        delete.response(terms(fit)),
+        new_data,
+        contrasts.arg = fit$contrasts
+      )
+      average_row <- colMeans(design_matrix)
+      beta <- coef(fit)
+      average_row <- average_row[names(beta)]
+      estimate <- drop(average_row %*% beta)
+      mean_se <- sqrt(drop(average_row %*% vcov(fit) %*% average_row))
+      critical_value <- qt(0.975, df.residual(fit))
+
+      tibble(
+        predicted_proportion = estimate,
+        expected_heads = {FLIPS_PER_TRIAL} * estimate,
+        mean_ci_low_heads = {FLIPS_PER_TRIAL} * max(0, estimate - critical_value * mean_se),
+        mean_ci_high_heads = {FLIPS_PER_TRIAL} * min(1, estimate + critical_value * mean_se),
+        distance_from_fair = abs(estimate - 0.5)
+      )
+    }}
+
+    average_predictions <- vector("list", nrow(design_grid))
+
+    for (row_number in seq_len(nrow(design_grid))) {{
+      condition <- design_grid[row_number, ]
+      average_predictions[[row_number]] <- bind_cols(
+        condition,
+        predict_average_condition(selected_fit, condition)
+      )
+    }}
+
+    average_predictions <- bind_rows(average_predictions) |>
+      arrange(desc(expected_heads))
+
+    cat("\\nPredicted heads for every design combination\\n")
+    cat("Design factors: denomination, posture, and starting_side.\\n")
+    cat("Decade and flipper block levels are averaged equally.\\n")
+    cat("The 95 percent confidence interval describes uncertainty in the estimated average heads.\\n")
+    print(average_predictions, n = Inf, width = Inf)
+    cat("\\nSelected model sigma-hat:", sigma(selected_fit), "\\n")
+
+    highest_average_design <- average_predictions |>
+      slice_max(expected_heads, n = 1, with_ties = TRUE)
+    fairest_average_design <- average_predictions |>
+      slice_min(distance_from_fair, n = 1, with_ties = TRUE)
+
+    cat("\\nHighest predicted design combination averaged across decades and flippers\\n")
+    print(highest_average_design, n = Inf, width = Inf)
+    cat("\\nFairest design combination averaged across decades and flippers\\n")
+    print(fairest_average_design, n = Inf, width = Inf)
   }}
 }}
 """
@@ -659,7 +850,49 @@ if (inherits(nuisance_fit, "try-error")) {{
 
 def r_ggplot_code(csv_path):
     return f"""library(tidyverse)
+library(car)
 library(broom)
+library(emmeans)
+
+posture_colors <- c(
+  Sitting = "#E76F51",
+  Standing = "#168AAD"
+)
+decade_colors <- c(
+  "1980" = "#457B9D",
+  "2010" = "#E9C46A"
+)
+flipper_colors <- c(
+  Esther = "#E76F51",
+  Jenny = "#2A9D8F",
+  Josh = "#457B9D"
+)
+interaction_colors <- c("#E76F51", "#2A9D8F", "#457B9D")
+design_labels <- c(
+  denomination = "Denomination",
+  posture = "Posture",
+  starting_side = "Starting side"
+)
+
+report_theme <- theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 16,
+      color = "#20242A",
+      margin = margin(b = 12)
+    ),
+    axis.title = element_text(face = "bold", color = "#30343B"),
+    axis.text = element_text(color = "#4A4F57"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    strip.background = element_rect(fill = "#F1F3F5", color = NA),
+    strip.text = element_text(face = "bold", color = "#30343B"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    plot.margin = margin(14, 18, 12, 14)
+  )
 
 coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
   mutate(
@@ -672,12 +905,11 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     posture = factor(posture),
     decade = factor(decade),
     flipper = factor(flipper),
-    starting_side = factor(starting_side),
-    treatment = interaction(denomination, posture, sep = " / ")
+    starting_side = factor(starting_side)
   )
 
-treatment_summary <- coin |>
-  group_by(denomination, posture) |>
+design_summary <- coin |>
+  group_by(denomination, posture, starting_side) |>
   summarise(
     runs = n(),
     mean_proportion = mean(proportion),
@@ -685,39 +917,59 @@ treatment_summary <- coin |>
     .groups = "drop"
   )
 
-p_treatment_mean <- ggplot(treatment_summary, aes(x = denomination, y = mean_proportion, fill = posture)) +
-  geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+p_design_mean <- ggplot(design_summary, aes(x = denomination, y = mean_proportion, fill = posture)) +
+  geom_col(
+    position = position_dodge(width = 0.75),
+    width = 0.65,
+    color = "white",
+    linewidth = 0.35
+  ) +
   geom_errorbar(
     aes(ymin = mean_proportion - se, ymax = mean_proportion + se),
     position = position_dodge(width = 0.75),
-    width = 0.2
+    width = 0.18,
+    linewidth = 0.55,
+    color = "#30343B"
   ) +
-  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "#555B63") +
+  facet_wrap(~ starting_side) +
+  scale_fill_manual(values = posture_colors) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(
-    title = "Mean proportion of heads by treatment",
+    title = "Mean proportion of heads by design combination",
     x = "Denomination",
     y = "Mean proportion of heads",
     fill = "Posture"
   ) +
-  theme_minimal()
+  report_theme
 
-p_treatment_observed <- ggplot(coin, aes(x = denomination, y = proportion, color = posture)) +
-  geom_jitter(width = 0.12, height = 0, alpha = 0.65, size = 2) +
-  geom_boxplot(aes(group = interaction(denomination, posture)), alpha = 0.25, outlier.shape = NA) +
-  geom_hline(yintercept = 0.5, linetype = "dashed") +
-  facet_wrap(~ posture) +
+p_design_observed <- ggplot(coin, aes(x = denomination, y = proportion, color = posture)) +
+  geom_jitter(width = 0.12, height = 0, alpha = 0.55, size = 1.8) +
+  geom_boxplot(
+    aes(group = interaction(denomination, posture)),
+    linewidth = 0.65,
+    outlier.shape = NA
+  ) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "#555B63") +
+  facet_grid(starting_side ~ posture) +
+  scale_color_manual(values = posture_colors) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(
-    title = "Observed proportions by treatment",
+    title = "Observed proportions by design combination",
     x = "Denomination",
     y = "Proportion heads"
   ) +
-  theme_minimal() +
+  report_theme +
   theme(legend.position = "none")
 
 p_probability_distribution <- ggplot(coin, aes(x = heads, y = after_stat(count / sum(count)))) +
-  geom_histogram(binwidth = 1, boundary = -0.5, fill = "#4C78A8", color = "white") +
+  geom_histogram(
+    binwidth = 1,
+    boundary = -0.5,
+    fill = "#2A9D8F",
+    color = "white",
+    linewidth = 0.45
+  ) +
   scale_x_continuous(breaks = 0:{FLIPS_PER_TRIAL}, limits = c(-0.5, {FLIPS_PER_TRIAL} + 0.5)) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   labs(
@@ -725,74 +977,247 @@ p_probability_distribution <- ggplot(coin, aes(x = heads, y = after_stat(count /
     x = "Heads out of 10",
     y = "Observed probability"
   ) +
-  theme_minimal()
+  report_theme
 
 p_decade <- ggplot(coin, aes(x = decade, y = proportion, fill = decade)) +
-  geom_boxplot(alpha = 0.55, outlier.shape = NA) +
-  geom_jitter(width = 0.12, alpha = 0.65, size = 2) +
-  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  geom_boxplot(alpha = 0.72, outlier.shape = NA, width = 0.56) +
+  geom_jitter(width = 0.12, alpha = 0.48, size = 1.7) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "#555B63") +
+  scale_fill_manual(values = decade_colors) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(
-    title = "Nuisance-factor check by decade",
+    title = "Block check by coin decade",
     x = "Decade",
     y = "Proportion heads"
   ) +
-  theme_minimal() +
+  report_theme +
   theme(legend.position = "none")
 
 p_flipper <- ggplot(coin, aes(x = flipper, y = proportion, fill = flipper)) +
-  geom_boxplot(alpha = 0.55, outlier.shape = NA) +
-  geom_jitter(width = 0.12, alpha = 0.65, size = 2) +
-  geom_hline(yintercept = 0.5, linetype = "dashed") +
+  geom_boxplot(alpha = 0.72, outlier.shape = NA, width = 0.56) +
+  geom_jitter(width = 0.12, alpha = 0.48, size = 1.7) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "#555B63") +
+  scale_fill_manual(values = flipper_colors) +
   scale_y_continuous(limits = c(0, 1)) +
   labs(
-    title = "Nuisance-factor check by flipper",
+    title = "Block check by flipper",
     x = "Flipper",
     y = "Proportion heads"
   ) +
-  theme_minimal() +
+  report_theme +
   theme(legend.position = "none")
 
-nuisance_fit <- try(
-  lm(
-    proportion ~ denomination * posture + decade + flipper + starting_side,
-    data = coin
-  ),
-  silent = TRUE
+alpha <- 0.05
+options(contrasts = c("contr.sum", "contr.poly"))
+
+full_formula <- proportion ~
+  denomination + posture + starting_side + decade + flipper +
+  denomination:posture +
+  denomination:starting_side +
+  denomination:decade +
+  denomination:flipper +
+  posture:starting_side +
+  posture:decade +
+  posture:flipper +
+  starting_side:decade +
+  starting_side:flipper +
+  decade:flipper +
+  denomination:posture:starting_side +
+  denomination:posture:decade +
+  denomination:posture:flipper +
+  denomination:starting_side:decade +
+  denomination:starting_side:flipper +
+  denomination:decade:flipper +
+  posture:starting_side:decade +
+  posture:starting_side:flipper +
+  posture:decade:flipper +
+  starting_side:decade:flipper
+full_fit <- lm(full_formula, data = coin)
+full_anova <- Anova(full_fit, type = 3)
+anova_table <- as.data.frame(full_anova)
+anova_table$term <- rownames(anova_table)
+p_column <- grep("^Pr\\\\(", names(anova_table), value = TRUE)[1]
+significant_terms <- anova_table |>
+  filter(
+    !term %in% c("(Intercept)", "Residuals"),
+    !is.na(.data[[p_column]]),
+    .data[[p_column]] < alpha
+  ) |>
+  pull(term)
+
+main_terms <- c(
+  "denomination", "posture", "starting_side", "decade", "flipper"
+)
+full_terms <- attr(terms(full_fit), "term.labels")
+term_order <- function(term) {{
+  length(strsplit(term, ":", fixed = TRUE)[[1]])
+}}
+two_way_terms <- full_terms[
+  vapply(full_terms, term_order, integer(1)) == 2
+]
+three_way_terms <- full_terms[
+  vapply(full_terms, term_order, integer(1)) == 3
+]
+interaction_terms <- c(two_way_terms, three_way_terms)
+significant_interactions <- intersect(
+  interaction_terms,
+  significant_terms
+)
+significant_three_way <- intersect(three_way_terms, significant_terms)
+required_two_way <- unique(unlist(lapply(
+  significant_three_way,
+  function(term) {{
+    variables <- strsplit(term, ":", fixed = TRUE)[[1]]
+    combn(
+      variables,
+      2,
+      FUN = function(parts) paste(parts, collapse = ":")
+    )
+  }}
+)))
+retained_interactions <- unique(c(
+  significant_interactions,
+  required_two_way
+))
+dropped_interactions <- setdiff(
+  interaction_terms,
+  retained_interactions
+)
+reduced_terms <- c(main_terms, retained_interactions)
+reduced_fit <- lm(
+  reformulate(reduced_terms, response = "proportion"),
+  data = coin
 )
 
-if (!inherits(nuisance_fit, "try-error")) {{
-  diagnostics <- augment(nuisance_fit)
+if (length(dropped_interactions) == 0) {{
+  selected_fit <- full_fit
+}} else {{
+  reduction_comparison <- anova(reduced_fit, full_fit)
+  reduction_p <- reduction_comparison[["Pr(>F)"]][2]
 
-  p_qq <- ggplot(diagnostics, aes(sample = .std.resid)) +
-    stat_qq() +
-    stat_qq_line() +
-    labs(
-      title = "Normal Q-Q plot of model residuals",
-      x = "Theoretical quantiles",
-      y = "Standardized residuals"
-    ) +
-    theme_minimal()
-
-  p_residuals <- ggplot(diagnostics, aes(x = .fitted, y = .resid)) +
-    geom_point(alpha = 0.7) +
-    geom_hline(yintercept = 0, linetype = "dashed") +
-    labs(
-      title = "Residuals versus fitted values",
-      x = "Fitted value",
-      y = "Residual"
-    ) +
-    theme_minimal()
+  if (!is.na(reduction_p) && reduction_p < alpha) {{
+    selected_fit <- full_fit
+  }} else {{
+    selected_fit <- reduced_fit
+  }}
 }}
 
-print(p_treatment_mean)
-print(p_treatment_observed)
+diagnostics <- augment(selected_fit)
+diagnostics$trial_id <- coin$trial_id
+
+p_residual_run_order <- ggplot(
+  diagnostics,
+  aes(x = trial_id, y = .resid)
+) +
+  geom_line(color = "#8A9099", linewidth = 0.5) +
+  geom_point(color = "#168AAD", alpha = 0.78, size = 1.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#555B63") +
+  labs(
+    title = "Residuals in randomized run order",
+    x = "Run",
+    y = "Residual"
+  ) +
+  report_theme
+
+interaction_data <- function(
+  group_name,
+  design_names = c("denomination", "posture", "starting_side")
+) {{
+  map_dfr(design_names, function(design_name) {{
+    estimated_means <- as.data.frame(
+      emmeans(selected_fit, specs = c(design_name, group_name))
+    )
+
+    estimated_means |>
+      transmute(
+        design_factor = design_name,
+        design_level = as.character(.data[[design_name]]),
+        group_level = as.character(.data[[group_name]]),
+        emmean = emmean
+      )
+  }})
+}}
+
+make_interaction_plot <- function(plot_data, group_label) {{
+  ggplot(
+    plot_data,
+    aes(
+      x = design_level,
+      y = emmean,
+      color = group_level,
+      group = group_level
+    )
+  ) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2.7) +
+    geom_hline(yintercept = 0.5, linetype = "dashed", color = "#555B63") +
+    facet_wrap(
+      ~ design_factor,
+      scales = "free_x",
+      nrow = 1,
+      labeller = as_labeller(design_labels)
+    ) +
+    scale_color_manual(values = interaction_colors) +
+    labs(
+      title = paste(group_label, "interactions with the design factors"),
+      x = NULL,
+      y = "Adjusted mean proportion of heads",
+      color = group_label
+    ) +
+    report_theme +
+    theme(axis.text.x = element_text(angle = 25, hjust = 1))
+}}
+
+p_flipper_interactions <- make_interaction_plot(
+  interaction_data("flipper"),
+  "Flipper"
+)
+
+p_decade_interactions <- make_interaction_plot(
+  interaction_data("decade"),
+  "Coin decade"
+)
+
+p_starting_side_interactions <- make_interaction_plot(
+  interaction_data(
+    "starting_side",
+    c("denomination", "posture")
+  ),
+  "Starting side"
+)
+
+p_qq <- ggplot(diagnostics, aes(sample = .std.resid)) +
+  stat_qq(color = "#168AAD", alpha = 0.72, size = 2) +
+  stat_qq_line(color = "#E76F51", linewidth = 0.8) +
+  labs(
+    title = "Normal Q-Q plot of model residuals",
+    x = "Theoretical quantiles",
+    y = "Standardized residuals"
+  ) +
+  report_theme
+
+p_residuals <- ggplot(diagnostics, aes(x = .fitted, y = .resid)) +
+  geom_point(color = "#168AAD", alpha = 0.72, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#555B63") +
+  labs(
+    title = "Residuals versus fitted values",
+    x = "Fitted value",
+    y = "Residual"
+  ) +
+  report_theme
+
+print(p_design_mean)
+print(p_design_observed)
 print(p_probability_distribution)
 print(p_decade)
 print(p_flipper)
+print(p_flipper_interactions)
+print(p_decade_interactions)
+print(p_starting_side_interactions)
 
-if (exists("p_qq")) print(p_qq)
-if (exists("p_residuals")) print(p_residuals)
+print(p_qq)
+print(p_residuals)
+print(p_residual_run_order)
 """
 
 
@@ -800,10 +1225,13 @@ def full_r_script(csv_path):
     return r_analysis_code(csv_path) + "\n\n" + r_ggplot_code(csv_path)
 
 
-def treatment_summary_table(df):
+def design_summary_table(df):
     return (
         df
-        .groupby(["denomination", "posture"], as_index=False)
+        .groupby(
+            ["denomination", "posture", "starting_side"],
+            as_index=False
+        )
         .agg(
             runs=("trial_id", "count"),
             total_heads=("heads", "sum"),
@@ -814,10 +1242,10 @@ def treatment_summary_table(df):
     )
 
 
-def nuisance_summary_table(df):
+def block_summary_table(df):
     return (
         df
-        .groupby(["decade", "flipper", "starting_side"], as_index=False)
+        .groupby(["decade", "flipper"], as_index=False)
         .agg(
             runs=("trial_id", "count"),
             total_heads=("heads", "sum"),
@@ -839,19 +1267,17 @@ def r_ggplot_render_script(input_csv, output_dir):
 
 dir.create("{r_escape_path(output_dir)}", showWarnings = FALSE, recursive = TRUE)
 
-ggsave(file.path("{r_escape_path(output_dir)}", "01-treatment-means.png"), p_treatment_mean, width = 8, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "02-treatment-observed.png"), p_treatment_observed, width = 8, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "01-design-means.png"), p_design_mean, width = 8, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "02-design-observed.png"), p_design_observed, width = 8, height = 5, dpi = 160)
 ggsave(file.path("{r_escape_path(output_dir)}", "03-probability-distribution.png"), p_probability_distribution, width = 8, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "04-decade-nuisance.png"), p_decade, width = 7, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "05-flipper-nuisance.png"), p_flipper, width = 7, height = 5, dpi = 160)
-
-if (exists("p_qq")) {{
-  ggsave(file.path("{r_escape_path(output_dir)}", "06-qq-residuals.png"), p_qq, width = 7, height = 5, dpi = 160)
-}}
-
-if (exists("p_residuals")) {{
-  ggsave(file.path("{r_escape_path(output_dir)}", "07-residuals-fitted.png"), p_residuals, width = 7, height = 5, dpi = 160)
-}}
+ggsave(file.path("{r_escape_path(output_dir)}", "04-decade-block.png"), p_decade, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "05-flipper-block.png"), p_flipper, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "06-flipper-interactions.png"), p_flipper_interactions, width = 11, height = 4.8, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "07-decade-interactions.png"), p_decade_interactions, width = 11, height = 4.8, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "08-starting-side-interactions.png"), p_starting_side_interactions, width = 9, height = 4.8, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "09-qq-residuals.png"), p_qq, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "10-residuals-fitted.png"), p_residuals, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "11-residuals-run-order.png"), p_residual_run_order, width = 10, height = 5, dpi = 160)
 """
 
 
@@ -1819,8 +2245,10 @@ with instructions_tab:
 
     st.markdown(f"**Vocabulary:** One run = {FLIPS_PER_TRIAL} flips.")
 
-    st.markdown("**Treatment factors:** denomination and posture.")
-    st.markdown("**Nuisance factors:** decade, flipper, and starting side.")
+    st.markdown(
+        "**Design factors:** denomination, posture, and starting side."
+    )
+    st.markdown("**Blocking factors:** decade and flipper.")
 
     c1, c2 = st.columns(2)
 
@@ -2037,36 +2465,174 @@ with results_tab:
     st.subheader("Analysis plan")
 
     st.markdown(
-        """
-        The treatment structure is denomination by posture. Decade, flipper,
-        and starting side are included as nuisance factors.
+        r"""
+        **Experiment steps**
 
-        The R model below uses:
+        1. **Fit the full model and run a Type III ANOVA.** The response is the
+           proportion of heads. Denomination, posture, and starting side are
+           design factors; decade and flipper are blocking factors. The full
+           model contains every main effect and all interactions through order
+           three.
+        2. **Create and fit the reduced model.** Interactions that are not
+           significant at the 5% level are removed together. Model hierarchy is
+           preserved: a retained interaction keeps all of its lower-order
+           components. The reduced model is fitted to the same complete set of
+           experimental runs as the full model. No observations are removed;
+           only unsupported terms are removed from the formula.
+        3. **Compare the reduced and full models.** A partial F-test, also
+           called an extra-sum-of-squares ANOVA, compares the variation
+           explained per omitted coefficient with the full model's residual
+           variation. This is not a raw equality-of-variances test. It asks
+           whether simplifying the formula causes a statistically significant
+           loss of fit.
+        4. **Select the model.** If the partial F-test is significant, retain
+           the full model because the removed terms matter jointly. Otherwise,
+           use the reduced model because it explains the data adequately with
+           fewer coefficients and more residual degrees of freedom.
+        5. **Check the selected model.** Examine the residual-versus-fitted,
+           normal Q-Q, and residual-versus-run-order plots before interpreting
+           its predictions.
+        6. **Predict every design combination.** Predict all 12 combinations of
+           denomination, posture, and starting side while averaging equally
+           over the decade and flipper blocks. The fairest condition is the
+           predicted proportion closest to 0.50, while the condition with the
+           highest predicted proportion of heads is reported separately.
 
-        - Treatment factors: `denomination`, `posture`
-        - Nuisance factors: `decade`, `flipper`, `starting_side`
+        Replication contributes repeated observations to the error estimate and
+        is not entered as a separate model term. The full model is:
         """
     )
 
     st.latex(
         r"""
-        y_{ijklm}
-        =
-        \mu
-        + \alpha_i
-        + \gamma_j
-        + (\alpha\gamma)_{ij}
-        + d_k
-        + f_l
-        + s_m
-        + \varepsilon_{ijklm}
+        \begin{aligned}
+        y_{ijklm(r)} ={}& \mu
+        + \alpha_i + \beta_j + \gamma_k + \delta_l + \phi_m \\
+        &+ (\alpha\beta)_{ij} + (\alpha\gamma)_{ik}
+        + (\alpha\delta)_{il} + (\alpha\phi)_{im} \\
+        &+ (\beta\gamma)_{jk} + (\beta\delta)_{jl}
+        + (\beta\phi)_{jm} \\
+        &+ (\gamma\delta)_{kl} + (\gamma\phi)_{km}
+        + (\delta\phi)_{lm} \\
+        &+ (\alpha\beta\gamma)_{ijk}
+        + (\alpha\beta\delta)_{ijl}
+        + (\alpha\beta\phi)_{ijm} \\
+        &+ (\alpha\gamma\delta)_{ikl}
+        + (\alpha\gamma\phi)_{ikm}
+        + (\alpha\delta\phi)_{ilm} \\
+        &+ (\beta\gamma\delta)_{jkl}
+        + (\beta\gamma\phi)_{jkm}
+        + (\beta\delta\phi)_{jlm} \\
+        &+ (\gamma\delta\phi)_{klm}
+        + \varepsilon_{ijklm(r)}.
+        \end{aligned}
+        """
+    )
+
+    st.markdown(
+        r"""
+        Here, $\alpha_i$, $\beta_j$, $\gamma_k$, $\delta_l$, and $\phi_m$
+        represent denomination, posture, starting side, decade, and flipper,
+        respectively. The first three are design-factor effects, while decade
+        and flipper are blocking effects. Parenthesized products are
+        interactions. Four-way and five-way interactions are not included. The matching R
+        formula is:
+        """
+    )
+
+    st.code(
+        """
+proportion ~
+  denomination + posture + starting_side + decade + flipper +
+  denomination:posture +
+  denomination:starting_side +
+  denomination:decade +
+  denomination:flipper +
+  posture:starting_side +
+  posture:decade +
+  posture:flipper +
+  starting_side:decade +
+  starting_side:flipper +
+  decade:flipper +
+  denomination:posture:starting_side +
+  denomination:posture:decade +
+  denomination:posture:flipper +
+  denomination:starting_side:decade +
+  denomination:starting_side:flipper +
+  denomination:decade:flipper +
+  posture:starting_side:decade +
+  posture:starting_side:flipper +
+  posture:decade:flipper +
+  starting_side:decade:flipper
+        """
+        ,
+        language="r"
+    )
+
+    st.markdown(
+        r"""
+        In the R formula, `:` means an interaction between the named factors.
+        Model reduction uses $\alpha = 0.05$. All five main effects remain, and
+        every lower-order component required by a retained interaction also
+        remains. No Tukey tests are performed.
+        """
+    )
+
+    st.markdown(
+        r"""
+        Terms omitted from the selected model contribute to the residual error
+        estimate $\hat{\sigma}^2$. That same estimate is used in the F-tests
+        and in the confidence intervals.
+
+        A 95% confidence interval here is a range for the model-estimated
+        average number of heads under a design combination. It describes
+        uncertainty about that average, not the range in which every individual
+        10-flip run must fall.
+
+        The residual-versus-fitted, Q-Q, and residual-versus-run-order plots
+        are used to judge the normal-model assumptions. A transformation or a
+        binomial model would be considered only if those diagnostics show a
+        serious pattern.
+
+        Finally, an R loop predicts all 12 denomination-by-posture-by-starting
+        side design combinations while averaging equally over the decade and
+        flipper blocks. No flipper-specific highest or fairest recommendation
+        is produced.
         """
     )
 
     st.markdown(
         """
-        where $d_k$, $f_l$, and $s_m$ are nuisance-factor effects. There are no
-        nuisance-by-treatment interactions in this model.
+        **Worked prediction example.** Using the current completed dataset, fix
+        the design condition at Dime, Sitting, and Tails. The selected model
+        gives one prediction for each of the two-decade-by-three-flipper block
+        combinations. Their equal-weight average is:
+        """
+    )
+
+    st.latex(
+        r"""
+        \begin{aligned}
+        \widehat p_{\mathrm{Dime,Sitting,Tails}}
+        &=
+        \frac{
+        0.493 + 0.576 + 0.571 + 0.483 + 0.566 + 0.561
+        }{6} \\
+        &= 0.5417, \\
+        \widehat H
+        &= 10\widehat p
+        = 10(0.5417)
+        = 5.42\ \text{expected heads}.
+        \end{aligned}
+        """
+    )
+
+    st.markdown(
+        """
+        The selected-model coefficients used for those six predictions were
+        estimated from all completed runs. Averaging across the six block
+        conditions removes individual flipper information from the reported
+        result.
         """
     )
 
@@ -2075,7 +2641,7 @@ with results_tab:
     st.subheader("Data preview for R")
     st.dataframe(results_df[cols], use_container_width=True)
 
-    csv_path = r_data_path()
+    csv_path = "coin_experiment_data.csv"
     analysis_code = r_analysis_code(csv_path)
     plot_code = r_ggplot_code(csv_path)
     script_code = full_r_script(csv_path)
@@ -2086,7 +2652,7 @@ with results_tab:
         st.download_button(
             "Download R analysis script",
             data=script_code.encode("utf-8"),
-            file_name="coin_nuisance_factor_analysis.R",
+            file_name="coin_blocked_factorial_analysis.R",
             mime="text/plain",
             use_container_width=True
         )
@@ -2143,16 +2709,16 @@ with results_tab:
                     st.code(analysis_output, language="text")
                 st.caption(analysis_error)
 
-                st.write("Treatment summary")
+                st.write("Design-factor summary")
                 st.dataframe(
-                    treatment_summary_table(results_df),
+                    design_summary_table(results_df),
                     use_container_width=True,
                     hide_index=True
                 )
 
-                st.write("Nuisance-factor summary")
+                st.write("Block-factor summary")
                 st.dataframe(
-                    nuisance_summary_table(results_df),
+                    block_summary_table(results_df),
                     use_container_width=True,
                     hide_index=True
                 )
@@ -2194,23 +2760,55 @@ with results_tab:
 
             if plots:
                 plot_titles = {
-                    "01-treatment-means": "Mean proportion of heads by treatment",
-                    "02-treatment-observed": "Observed proportions by treatment",
+                    "01-design-means": "Mean proportion of heads by design combination",
+                    "02-design-observed": "Observed proportions by design combination",
                     "03-probability-distribution": "Observed probability distribution of heads",
-                    "04-decade-nuisance": "Nuisance-factor check by decade",
-                    "05-flipper-nuisance": "Nuisance-factor check by flipper",
-                    "06-qq-residuals": "Normal Q-Q plot of model residuals",
-                    "07-residuals-fitted": "Residuals versus fitted values",
+                    "04-decade-block": "Block check by coin decade",
+                    "05-flipper-block": "Block check by flipper",
+                    "06-flipper-interactions": "Flipper interactions with design factors",
+                    "07-decade-interactions": "Coin-decade interactions with design factors",
+                    "08-starting-side-interactions": "Starting-side interactions with other design factors",
+                    "09-qq-residuals": "Normal Q-Q plot of selected-model residuals",
+                    "10-residuals-fitted": "Residuals versus fitted values",
+                    "11-residuals-run-order": "Residuals in randomized run order",
+                }
+
+                plot_lookup = dict(plots)
+                interaction_plot_names = {
+                    "06-flipper-interactions",
+                    "07-decade-interactions",
+                    "08-starting-side-interactions",
                 }
 
                 for plot_name, plot_bytes in plots:
+                    if plot_name in interaction_plot_names:
+                        continue
+
                     st.image(
                         plot_bytes,
                         caption=plot_titles.get(plot_name, plot_name),
                         use_container_width=True
                     )
 
-                if len(plots) < 7:
+                interaction_plot_columns = st.columns(3)
+
+                for column, plot_name in zip(
+                    interaction_plot_columns,
+                    [
+                        "06-flipper-interactions",
+                        "07-decade-interactions",
+                        "08-starting-side-interactions",
+                    ]
+                ):
+                    if plot_name in plot_lookup:
+                        with column:
+                            st.image(
+                                plot_lookup[plot_name],
+                                caption=plot_titles[plot_name],
+                                use_container_width=True
+                            )
+
+                if len(plots) < 11:
                     st.info(
                         "Diagnostic plots will appear once there is enough data to fit the full model."
                     )
@@ -2220,16 +2818,18 @@ with results_tab:
                 )
                 st.caption(plot_error)
 
-                treatment_chart = treatment_summary_table(results_df).copy()
-                treatment_chart["treatment"] = (
-                    treatment_chart["denomination"].astype(str)
+                design_chart = design_summary_table(results_df).copy()
+                design_chart["design_condition"] = (
+                    design_chart["denomination"].astype(str)
                     + " / "
-                    + treatment_chart["posture"].astype(str)
+                    + design_chart["posture"].astype(str)
+                    + " / "
+                    + design_chart["starting_side"].astype(str)
                 )
 
-                st.write("Mean proportion of heads by treatment")
+                st.write("Mean proportion of heads by design combination")
                 st.bar_chart(
-                    treatment_chart.set_index("treatment")["mean_proportion"],
+                    design_chart.set_index("design_condition")["mean_proportion"],
                     use_container_width=True
                 )
 
@@ -2246,18 +2846,16 @@ with results_tab:
                     use_container_width=True
                 )
 
-                nuisance_chart = nuisance_summary_table(results_df).copy()
-                nuisance_chart["nuisance_group"] = (
-                    nuisance_chart["decade"].astype(str)
+                block_chart = block_summary_table(results_df).copy()
+                block_chart["block_group"] = (
+                    block_chart["decade"].astype(str)
                     + " / "
-                    + nuisance_chart["flipper"].astype(str)
-                    + " / "
-                    + nuisance_chart["starting_side"].astype(str)
+                    + block_chart["flipper"].astype(str)
                 )
 
-                st.write("Mean proportion of heads by nuisance-factor group")
+                st.write("Mean proportion of heads by block group")
                 st.bar_chart(
-                    nuisance_chart.set_index("nuisance_group")["mean_proportion"],
+                    block_chart.set_index("block_group")["mean_proportion"],
                     use_container_width=True
                 )
 
