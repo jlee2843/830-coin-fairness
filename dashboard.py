@@ -2911,7 +2911,12 @@ print(binomial_distribution)
             use_container_width=True
         )
 
-        if run_plots:
+        has_current_plots = (
+            st.session_state.get(plot_data_key) == plot_data_csv
+            and plot_result_key in st.session_state
+        )
+
+        if run_plots or not has_current_plots:
             with st.spinner("Rendering ggplot images with R..."):
                 st.session_state[plot_result_key] = render_r_ggplots(plot_data_csv)
                 st.session_state[plot_data_key] = plot_data_csv
@@ -2921,9 +2926,7 @@ print(binomial_distribution)
             and plot_result_key in st.session_state
         )
 
-        if not has_current_plots:
-            st.info("Run the R ggplot renderer when you want to refresh the plot images.")
-        else:
+        if has_current_plots:
             plots, plot_error = st.session_state[plot_result_key]
 
             if plots:
