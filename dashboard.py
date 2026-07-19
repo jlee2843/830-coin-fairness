@@ -5,6 +5,7 @@ import tempfile
 from datetime import datetime
 from html import escape
 from io import StringIO
+from math import comb
 from pathlib import Path
 
 import numpy as np
@@ -187,6 +188,7 @@ RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
 # Touch this comment when Streamlit Cloud needs a fresh deploy trigger.
 GITHUB_CACHE_TTL_SECONDS = 60
 DATA_TOOLS_KEY = "show_submit_data_tools"
+R_PLOT_RENDER_VERSION = 3
 
 HELD_CONSTANTS = [
     "Sitting height / chair height",
@@ -979,6 +981,86 @@ p_probability_distribution <- ggplot(coin, aes(x = heads, y = after_stat(count /
   ) +
   report_theme
 
+binomial_x <- 0:{FLIPS_PER_TRIAL}
+fair_binomial_p <- 0.5
+observed_binomial_p <- sum(coin$heads) / sum(coin$total)
+
+binomial_probability <- function(x, n, p) {{
+  (
+    factorial(n) /
+    (factorial(n - x) * factorial(x))
+  ) * p^x * (1 - p)^(n - x)
+}}
+
+binomial_overlay <- tibble(
+  heads = binomial_x,
+  observed_runs = tabulate(
+    coin$heads + 1,
+    nbins = {FLIPS_PER_TRIAL + 1}
+  ),
+  `Fair-coin model` = nrow(coin) * binomial_probability(
+    binomial_x,
+    {FLIPS_PER_TRIAL},
+    fair_binomial_p
+  ),
+  `Observed-data model` = nrow(coin) * binomial_probability(
+    binomial_x,
+    {FLIPS_PER_TRIAL},
+    observed_binomial_p
+  )
+)
+
+binomial_expected <- binomial_overlay |>
+  select(heads, `Fair-coin model`, `Observed-data model`) |>
+  pivot_longer(
+    cols = -heads,
+    names_to = "distribution",
+    values_to = "expected_runs"
+  )
+
+p_binomial_overlay <- ggplot() +
+  geom_col(
+    data = binomial_overlay,
+    aes(x = heads, y = observed_runs),
+    width = 0.78,
+    fill = "#2A9D8F",
+    color = "white",
+    linewidth = 0.45,
+    alpha = 0.72
+  ) +
+  geom_line(
+    data = binomial_expected,
+    aes(
+      x = heads,
+      y = expected_runs,
+      color = distribution,
+      group = distribution
+    ),
+    linewidth = 1.15
+  ) +
+  geom_point(
+    data = binomial_expected,
+    aes(x = heads, y = expected_runs, color = distribution),
+    size = 2.4
+  ) +
+  scale_x_continuous(
+    breaks = 0:{FLIPS_PER_TRIAL},
+    limits = c(-0.5, {FLIPS_PER_TRIAL} + 0.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Fair-coin model" = "#457B9D",
+      "Observed-data model" = "#E76F51"
+    )
+  ) +
+  labs(
+    title = "Observed heads with binomial overlays",
+    x = "Heads out of 10",
+    y = "Number of runs",
+    color = NULL
+  ) +
+  report_theme
+
 p_decade <- ggplot(coin, aes(x = decade, y = proportion, fill = decade)) +
   geom_boxplot(alpha = 0.72, outlier.shape = NA, width = 0.56) +
   geom_jitter(width = 0.12, alpha = 0.48, size = 1.7) +
@@ -1209,6 +1291,7 @@ p_residuals <- ggplot(diagnostics, aes(x = .fitted, y = .resid)) +
 print(p_design_mean)
 print(p_design_observed)
 print(p_probability_distribution)
+print(p_binomial_overlay)
 print(p_decade)
 print(p_flipper)
 print(p_flipper_interactions)
@@ -1270,14 +1353,15 @@ dir.create("{r_escape_path(output_dir)}", showWarnings = FALSE, recursive = TRUE
 ggsave(file.path("{r_escape_path(output_dir)}", "01-design-means.png"), p_design_mean, width = 8, height = 5, dpi = 160)
 ggsave(file.path("{r_escape_path(output_dir)}", "02-design-observed.png"), p_design_observed, width = 8, height = 5, dpi = 160)
 ggsave(file.path("{r_escape_path(output_dir)}", "03-probability-distribution.png"), p_probability_distribution, width = 8, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "04-decade-block.png"), p_decade, width = 7, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "05-flipper-block.png"), p_flipper, width = 7, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "06-flipper-interactions.png"), p_flipper_interactions, width = 11, height = 4.8, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "07-decade-interactions.png"), p_decade_interactions, width = 11, height = 4.8, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "08-starting-side-interactions.png"), p_starting_side_interactions, width = 9, height = 4.8, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "09-qq-residuals.png"), p_qq, width = 7, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "10-residuals-fitted.png"), p_residuals, width = 7, height = 5, dpi = 160)
-ggsave(file.path("{r_escape_path(output_dir)}", "11-residuals-run-order.png"), p_residual_run_order, width = 10, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "04-binomial-overlay.png"), p_binomial_overlay, width = 8, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "05-decade-block.png"), p_decade, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "06-flipper-block.png"), p_flipper, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "07-flipper-interactions.png"), p_flipper_interactions, width = 11, height = 4.8, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "08-decade-interactions.png"), p_decade_interactions, width = 11, height = 4.8, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "09-starting-side-interactions.png"), p_starting_side_interactions, width = 9, height = 4.8, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "10-qq-residuals.png"), p_qq, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "11-residuals-fitted.png"), p_residuals, width = 7, height = 5, dpi = 160)
+ggsave(file.path("{r_escape_path(output_dir)}", "12-residuals-run-order.png"), p_residual_run_order, width = 10, height = 5, dpi = 160)
 """
 
 
@@ -2636,6 +2720,90 @@ proportion ~
         """
     )
 
+    st.subheader("Binomial distribution for 10 coin flips")
+
+    st.code(
+        """
+coin <- read.csv("coin_experiment_data.csv")
+n <- 10
+x <- 0:n
+p <- 0.5
+observed_p <- sum(coin$heads) / (nrow(coin) * n)
+
+binomial_probability <- function(x, n, p) {
+  (
+    factorial(n) /
+    (factorial(n - x) * factorial(x))
+  ) * p^x * (1 - p)^(n - x)
+}
+
+fair_probability <- binomial_probability(x, n, p)
+observed_probability <- binomial_probability(x, n, observed_p)
+observed_count <- tabulate(coin$heads + 1, nbins = n + 1)
+
+binomial_distribution <- data.frame(
+  heads = x,
+  tails = n - x,
+  observed_count = observed_count,
+  observed_frequency = observed_count / nrow(coin),
+  fair_probability = fair_probability,
+  observed_probability = observed_probability
+)
+
+print(binomial_distribution)
+        """.strip(),
+        language="r"
+    )
+
+    binomial_heads = np.arange(FLIPS_PER_TRIAL + 1)
+    fair_binomial_probability = np.array([
+        comb(FLIPS_PER_TRIAL, int(x))
+        * 0.5 ** int(x)
+        * 0.5 ** (FLIPS_PER_TRIAL - int(x))
+        for x in binomial_heads
+    ])
+    observed_head_probability = (
+        results_df["heads"].sum()
+        / (len(results_df) * FLIPS_PER_TRIAL)
+    )
+    observed_binomial_probability = np.array([
+        comb(FLIPS_PER_TRIAL, int(x))
+        * observed_head_probability ** int(x)
+        * (1 - observed_head_probability)
+        ** (FLIPS_PER_TRIAL - int(x))
+        for x in binomial_heads
+    ])
+    observed_binomial_counts = (
+        results_df["heads"]
+        .astype(int)
+        .value_counts()
+        .reindex(binomial_heads, fill_value=0)
+        .to_numpy()
+    )
+    binomial_results = pd.DataFrame({
+        "Heads": binomial_heads,
+        "Tails": FLIPS_PER_TRIAL - binomial_heads,
+        "Observed runs": observed_binomial_counts,
+        "Observed frequency": observed_binomial_counts / len(results_df),
+        "Fair-coin probability": fair_binomial_probability,
+        "Observed-p probability": observed_binomial_probability,
+    })
+
+    st.metric(
+        "Observed probability of heads",
+        f"{observed_head_probability:.4f}"
+    )
+
+    st.dataframe(
+        binomial_results.style.format({
+            "Observed frequency": "{:.4%}",
+            "Fair-coin probability": "{:.4%}",
+            "Observed-p probability": "{:.4%}"
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
     st.divider()
 
     st.subheader("Data preview for R")
@@ -2736,8 +2904,8 @@ proportion ~
 
     with plot_tab:
         plot_data_csv = results_df[cols].to_csv(index=False)
-        plot_result_key = "r_plot_result"
-        plot_data_key = "r_plot_data_csv"
+        plot_result_key = f"r_plot_result_v{R_PLOT_RENDER_VERSION}"
+        plot_data_key = f"r_plot_data_csv_v{R_PLOT_RENDER_VERSION}"
         run_plots = st.button(
             "Run/update R ggplot images",
             use_container_width=True
@@ -2763,21 +2931,22 @@ proportion ~
                     "01-design-means": "Mean proportion of heads by design combination",
                     "02-design-observed": "Observed proportions by design combination",
                     "03-probability-distribution": "Observed probability distribution of heads",
-                    "04-decade-block": "Block check by coin decade",
-                    "05-flipper-block": "Block check by flipper",
-                    "06-flipper-interactions": "Flipper interactions with design factors",
-                    "07-decade-interactions": "Coin-decade interactions with design factors",
-                    "08-starting-side-interactions": "Starting-side interactions with other design factors",
-                    "09-qq-residuals": "Normal Q-Q plot of selected-model residuals",
-                    "10-residuals-fitted": "Residuals versus fitted values",
-                    "11-residuals-run-order": "Residuals in randomized run order",
+                    "04-binomial-overlay": "Observed heads with binomial overlays",
+                    "05-decade-block": "Block check by coin decade",
+                    "06-flipper-block": "Block check by flipper",
+                    "07-flipper-interactions": "Flipper interactions with design factors",
+                    "08-decade-interactions": "Coin-decade interactions with design factors",
+                    "09-starting-side-interactions": "Starting-side interactions with other design factors",
+                    "10-qq-residuals": "Normal Q-Q plot of selected-model residuals",
+                    "11-residuals-fitted": "Residuals versus fitted values",
+                    "12-residuals-run-order": "Residuals in randomized run order",
                 }
 
                 plot_lookup = dict(plots)
                 interaction_plot_names = {
-                    "06-flipper-interactions",
-                    "07-decade-interactions",
-                    "08-starting-side-interactions",
+                    "07-flipper-interactions",
+                    "08-decade-interactions",
+                    "09-starting-side-interactions",
                 }
 
                 for plot_name, plot_bytes in plots:
@@ -2795,9 +2964,9 @@ proportion ~
                 for column, plot_name in zip(
                     interaction_plot_columns,
                     [
-                        "06-flipper-interactions",
-                        "07-decade-interactions",
-                        "08-starting-side-interactions",
+                        "07-flipper-interactions",
+                        "08-decade-interactions",
+                        "09-starting-side-interactions",
                     ]
                 ):
                     if plot_name in plot_lookup:
@@ -2808,7 +2977,7 @@ proportion ~
                                 use_container_width=True
                             )
 
-                if len(plots) < 11:
+                if len(plots) < 12:
                     st.info(
                         "Diagnostic plots will appear once there is enough data to fit the full model."
                     )
