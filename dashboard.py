@@ -188,7 +188,8 @@ RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
 # Touch this comment when Streamlit Cloud needs a fresh deploy trigger.
 GITHUB_CACHE_TTL_SECONDS = 60
 DATA_TOOLS_KEY = "show_submit_data_tools"
-R_PLOT_RENDER_VERSION = 5
+R_ANALYSIS_RENDER_VERSION = 2
+R_PLOT_RENDER_VERSION = 6
 
 HELD_CONSTANTS = [
     "Sitting height / chair height",
@@ -595,13 +596,7 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     proportion = heads / total,
     denomination = factor(denomination),
     posture = factor(posture),
-    decade = factor(dplyr::recode(
-      as.character(decade),
-      "1980s" = "1977",
-      "1980" = "1977",
-      "2010s" = "2019",
-      "2010" = "2019"
-    )),
+    decade = factor(decade),
     flipper = factor(flipper),
     starting_side = factor(starting_side)
   )
@@ -922,13 +917,7 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     proportion = heads / total,
     denomination = factor(denomination),
     posture = factor(posture),
-    decade = factor(dplyr::recode(
-      as.character(decade),
-      "1980s" = "1977",
-      "1980" = "1977",
-      "2010s" = "2019",
-      "2010" = "2019"
-    )),
+    decade = factor(decade),
     flipper = factor(flipper),
     starting_side = factor(starting_side)
   )
@@ -1389,7 +1378,7 @@ ggsave(file.path("{r_escape_path(output_dir)}", "12-residuals-run-order.png"), p
 
 
 @st.cache_data(show_spinner=False)
-def render_r_analysis(data_csv):
+def render_r_analysis(data_csv, render_version):
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         input_csv = tmp_path / "coin_experiment_data.csv"
@@ -1420,7 +1409,7 @@ def render_r_analysis(data_csv):
 
 
 @st.cache_data(show_spinner=False)
-def render_r_ggplots(data_csv):
+def render_r_ggplots(data_csv, render_version):
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         input_csv = tmp_path / "coin_experiment_data.csv"
@@ -2866,8 +2855,12 @@ print(binomial_distribution)
 
     with code_tab:
         analysis_data_csv = results_df[cols].to_csv(index=False)
-        analysis_result_key = "r_analysis_result"
-        analysis_data_key = "r_analysis_data_csv"
+        analysis_result_key = (
+            f"r_analysis_result_v{R_ANALYSIS_RENDER_VERSION}"
+        )
+        analysis_data_key = (
+            f"r_analysis_data_csv_v{R_ANALYSIS_RENDER_VERSION}"
+        )
         run_analysis = st.button(
             "Run/update R summaries and model",
             use_container_width=True
@@ -2876,7 +2869,8 @@ print(binomial_distribution)
         if run_analysis:
             with st.spinner("Running R summaries and model..."):
                 st.session_state[analysis_result_key] = render_r_analysis(
-                    analysis_data_csv
+                    analysis_data_csv,
+                    R_ANALYSIS_RENDER_VERSION
                 )
                 st.session_state[analysis_data_key] = analysis_data_csv
 
@@ -2941,7 +2935,10 @@ print(binomial_distribution)
 
         if run_plots or not has_current_plots:
             with st.spinner("Rendering ggplot images with R..."):
-                st.session_state[plot_result_key] = render_r_ggplots(plot_data_csv)
+                st.session_state[plot_result_key] = render_r_ggplots(
+                    plot_data_csv,
+                    R_PLOT_RENDER_VERSION
+                )
                 st.session_state[plot_data_key] = plot_data_csv
 
         has_current_plots = (
