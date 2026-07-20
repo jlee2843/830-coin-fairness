@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 DENOMINATIONS = ["Nickel", "Dime", "Quarter"]
-DECADES = ["1980s", "2010s"]
+DECADES = ["1977", "2019"]
 POSTURES = ["Standing", "Sitting"]
 FLIPPERS = ["Jenny", "Josh", "Esther"]
 STARTING_SIDES = ["Heads", "Tails"]

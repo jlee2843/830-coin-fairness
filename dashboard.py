@@ -188,7 +188,7 @@ RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
 # Touch this comment when Streamlit Cloud needs a fresh deploy trigger.
 GITHUB_CACHE_TTL_SECONDS = 60
 DATA_TOOLS_KEY = "show_submit_data_tools"
-R_PLOT_RENDER_VERSION = 3
+R_PLOT_RENDER_VERSION = 4
 
 HELD_CONSTANTS = [
     "Sitting height / chair height",
@@ -226,10 +226,17 @@ assignment_cols = [
 ]
 
 denominations = ["Nickel", "Dime", "Quarter"]
-decades = ["1980s", "2010s"]
+decades = ["1977", "2019"]
 postures = ["Standing", "Sitting"]
 flippers = ["Jenny", "Josh", "Esther"]
 starting_sides = ["Heads", "Tails"]
+
+DECADE_VALUE_MAP = {
+    "1980s": "1977",
+    "1980": "1977",
+    "2010s": "2019",
+    "2010": "2019",
+}
 
 github_token = st.secrets.get("GITHUB_TOKEN", "")
 github_repo = st.secrets.get("GITHUB_REPO", "")
@@ -318,6 +325,8 @@ def load_run_schedule():
 
     for c in ["denomination", "decade", "posture", "flipper", "starting_side"]:
         schedule[c] = schedule[c].astype(str).str.strip().replace({"nan": ""})
+
+    schedule["decade"] = schedule["decade"].replace(DECADE_VALUE_MAP)
 
     return schedule.sort_values("run_id").reset_index(drop=True)
 
@@ -453,6 +462,8 @@ def clean_data(df):
     for c in ["denomination", "decade", "posture", "flipper", "starting_side"]:
         df[c] = df[c].astype(str).str.strip().replace({"nan": ""})
 
+    df["decade"] = df["decade"].replace(DECADE_VALUE_MAP)
+
     df["trial_id"] = pd.to_numeric(df["trial_id"], errors="coerce")
     df["heads"] = pd.to_numeric(df["heads"], errors="coerce")
 
@@ -488,9 +499,9 @@ def make_dummy_data():
                 for rep in range(4):
                     p = base_p[denomination]
 
-                    if decade == "1980s":
+                    if decade == "1977":
                         p -= 0.02
-                    elif decade == "2010s":
+                    elif decade == "2019":
                         p += 0.02
 
                     if posture == "Standing":
@@ -584,7 +595,13 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     proportion = heads / total,
     denomination = factor(denomination),
     posture = factor(posture),
-    decade = factor(decade),
+    decade = factor(recode(
+      as.character(decade),
+      "1980s" = "1977",
+      "1980" = "1977",
+      "2010s" = "2019",
+      "2010" = "2019"
+    )),
     flipper = factor(flipper),
     starting_side = factor(starting_side)
   )
@@ -861,8 +878,8 @@ posture_colors <- c(
   Standing = "#168AAD"
 )
 decade_colors <- c(
-  "1980" = "#457B9D",
-  "2010" = "#E9C46A"
+  "1977" = "#457B9D",
+  "2019" = "#E9C46A"
 )
 flipper_colors <- c(
   Esther = "#E76F51",
@@ -905,7 +922,13 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     proportion = heads / total,
     denomination = factor(denomination),
     posture = factor(posture),
-    decade = factor(decade),
+    decade = factor(recode(
+      as.character(decade),
+      "1980s" = "1977",
+      "1980" = "1977",
+      "2010s" = "2019",
+      "2010" = "2019"
+    )),
     flipper = factor(flipper),
     starting_side = factor(starting_side)
   )
