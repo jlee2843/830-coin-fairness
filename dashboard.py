@@ -188,7 +188,7 @@ RUN_SCHEDULE_PATH = Path("data/run_schedule.csv")
 # Touch this comment when Streamlit Cloud needs a fresh deploy trigger.
 GITHUB_CACHE_TTL_SECONDS = 60
 DATA_TOOLS_KEY = "show_submit_data_tools"
-R_PLOT_RENDER_VERSION = 4
+R_PLOT_RENDER_VERSION = 5
 
 HELD_CONSTANTS = [
     "Sitting height / chair height",
@@ -595,7 +595,7 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     proportion = heads / total,
     denomination = factor(denomination),
     posture = factor(posture),
-    decade = factor(recode(
+    decade = factor(dplyr::recode(
       as.character(decade),
       "1980s" = "1977",
       "1980" = "1977",
@@ -922,7 +922,7 @@ coin <- read_csv("{csv_path}", show_col_types = FALSE) |>
     proportion = heads / total,
     denomination = factor(denomination),
     posture = factor(posture),
-    decade = factor(recode(
+    decade = factor(dplyr::recode(
       as.character(decade),
       "1980s" = "1977",
       "1980" = "1977",
